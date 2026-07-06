@@ -22,7 +22,7 @@ TrustMeBOF/
 ├── src/                         8 BOF source files
 ├── bin/                         Compiled .o files (ready to load)
 ├── cna/tmb.cna                  Cobalt Strike aggressor script
-├── axscript/tmb.axscript        Adaptix C2 extension
+├── axscript/tmb.axs             Adaptix C2 extension
 ├── Makefile
 ├── setup.sh
 └── README.md
