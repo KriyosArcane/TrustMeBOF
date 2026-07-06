@@ -15,7 +15,7 @@ var bof_dir = ax.script_dir() + "../bin/";
 // ---- tmb_probe ----
 var cmd_probe = ax.create_command("tmb_probe", "Query local CI enforcement state", "tmb_probe");
 cmd_probe.setPreHook(function (id, cmdline, parsed_json, ...parsed_lines) {
-    let bof_path = bof_dir + "tmb_probe." + ax.arch(id) + ".o";
+    let bof_path = bof_dir + "tmb_probe.o";
     ax.execute_alias(id, cmdline, `execute bof "${bof_path}"`, "Task: CI probe");
 });
 
@@ -25,7 +25,7 @@ cmd_fp.addArgBool("--clean", "Restore FinalPolicy to default");
 cmd_fp.setPreHook(function (id, cmdline, parsed_json, ...parsed_lines) {
     let action = parsed_json["--clean"] ? 1 : 0;
     let bof_params = ax.bof_pack("short", [action]);
-    let bof_path = bof_dir + "tmb_finalpolicy." + ax.arch(id) + ".o";
+    let bof_path = bof_dir + "tmb_finalpolicy.o";
     ax.execute_alias(id, cmdline, `execute bof "${bof_path}" ${bof_params}`, "Task: FinalPolicy");
 });
 
@@ -42,7 +42,7 @@ cmd_sip.setPreHook(function (id, cmdline, parsed_json, ...parsed_lines) {
     if (parsed_json["--sac"]) flags |= 2;
     let guids = parsed_json["sip_types"] || "pe,ps1,msi";
     let bof_params = ax.bof_pack("short,short,cstr", [action, flags, guids]);
-    let bof_path = bof_dir + "tmb_sip_hijack." + ax.arch(id) + ".o";
+    let bof_path = bof_dir + "tmb_sip_hijack.o";
     ax.execute_alias(id, cmdline, `execute bof "${bof_path}" ${bof_params}`, "Task: SIP hijack");
 });
 
@@ -59,7 +59,7 @@ cmd_wow.setPreHook(function (id, cmdline, parsed_json, ...parsed_lines) {
     if (parsed_json["--sac"]) flags |= 2;
     let guids = parsed_json["sip_types"] || "pe,ps1,msi";
     let bof_params = ax.bof_pack("short,short,cstr", [action, flags, guids]);
-    let bof_path = bof_dir + "tmb_wow64_hijack." + ax.arch(id) + ".o";
+    let bof_path = bof_dir + "tmb_wow64_hijack.o";
     ax.execute_alias(id, cmdline, `execute bof "${bof_path}" ${bof_params}`, "Task: WOW64 SIP hijack");
 });
 
@@ -71,7 +71,7 @@ cmd_cp.setPreHook(function (id, cmdline, parsed_json, ...parsed_lines) {
     let action = parsed_json["--clean"] ? 1 : 0;
     let guid = parsed_json["guid"] || "";
     let bof_params = ax.bof_pack("short,cstr", [action, guid]);
-    let bof_path = bof_dir + "tmb_custom_provider." + ax.arch(id) + ".o";
+    let bof_path = bof_dir + "tmb_custom_provider.o";
     ax.execute_alias(id, cmdline, `execute bof "${bof_path}" ${bof_params}`, "Task: Custom provider");
 });
 
@@ -85,7 +85,7 @@ cmd_se.setPreHook(function (id, cmdline, parsed_json, ...parsed_lines) {
     let dll = parsed_json["dll"] || "";
     let guid = parsed_json["guid"] || "pe";
     let bof_params = ax.bof_pack("short,cstr,cstr", [action, dll, guid]);
-    let bof_path = bof_dir + "tmb_sip_exec." + ax.arch(id) + ".o";
+    let bof_path = bof_dir + "tmb_sip_exec.o";
     ax.execute_alias(id, cmdline, `execute bof "${bof_path}" ${bof_params}`, "Task: SIP exec");
 });
 
@@ -102,7 +102,7 @@ cmd_clean.setPreHook(function (id, cmdline, parsed_json, ...parsed_lines) {
     if (parsed_json["--all"]) flags |= 4;
     let guid = parsed_json["provider"] || "";
     let bof_params = ax.bof_pack("short,cstr", [flags, guid]);
-    let bof_path = bof_dir + "tmb_clean." + ax.arch(id) + ".o";
+    let bof_path = bof_dir + "tmb_clean.o";
     ax.execute_alias(id, cmdline, `execute bof "${bof_path}" ${bof_params}`, "Task: Cleanup");
 });
 
@@ -118,7 +118,7 @@ cmd_fg.setPreHook(function (id, cmdline, parsed_json, ...parsed_lines) {
     let dll = parsed_json["dll"] || "";
     let func = parsed_json["func"] || "FormatObject";
     let bof_params = ax.bof_pack("short,cstr,cstr,cstr", [action, oid, dll, func]);
-    let bof_path = bof_dir + "tmb_formatghost." + ax.arch(id) + ".o";
+    let bof_path = bof_dir + "tmb_formatghost.o";
     ax.execute_alias(id, cmdline, `execute bof "${bof_path}" ${bof_params}`, "Task: FormatGhost");
 });
 
