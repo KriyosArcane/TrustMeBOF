@@ -490,8 +490,8 @@ extern "C" void go(char *args, int alen) {
     int tmp = 0;
     char *target = BeaconDataExtract(&parser, &tmp);
     char *command = BeaconDataExtract(&parser, &tmp);
-    int dll_len = BeaconDataInt(&parser);
-    char *dll_data = BeaconDataExtract(&parser, &tmp);
+    int dll_len = 0;
+    char *dll_data = BeaconDataExtract(&parser, &dll_len);
     char *dll_path_override = BeaconDataExtract(&parser, &tmp);
     char *share = BeaconDataExtract(&parser, &tmp);
     char *guid_alias = BeaconDataExtract(&parser, &tmp);

