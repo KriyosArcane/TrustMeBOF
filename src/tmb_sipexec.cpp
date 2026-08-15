@@ -409,12 +409,20 @@ static BOOL trigger_wmi(IWbemServices *pSvc) {
         return FALSE;
     }
 
-    /* Fetch at least one result to ensure WVT fires */
+    /* Fetch at least one result to ensure WVT fires.
+     * Use 30s timeout -- if wmiprvse hangs (e.g. DLL blocks or crashes),
+     * we don't want the BOF to hang forever. */
     IWbemClassObject *pObj = NULL;
     ULONG uReturn = 0;
-    hr = pEnum->Next(WBEM_INFINITE, 1, &pObj, &uReturn);
+    hr = pEnum->Next(30000, 1, &pObj, &uReturn);
     if (pObj) pObj->Release();
     pEnum->Release();
+
+    if (hr == WBEM_S_TIMEDOUT) {
+        TMB_WARN("WMI query timed out (30s) -- DLL may still have loaded via DllMain");
+    } else if (FAILED(hr)) {
+        TMB_WARN("WMI Next() returned 0x%08lx -- DLL may still have loaded via DllMain", hr);
+    }
 
     TMB_INFO("WMI trigger fired (Win32_PnPSignedDriver)");
     return TRUE;
