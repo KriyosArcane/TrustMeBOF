@@ -31,5 +31,8 @@ payload:
 	$(CC) -shared -O2 -s -fno-ident -o sipexec/sipexec_payload_impersonate.dll \
 		sipexec/sipexec_payload_impersonate.c -lkernel32 -ladvapi32
 	@echo "  sipexec/sipexec_payload_impersonate.dll"
+	$(CC) -shared -O2 -s -fno-ident -o sipexec/sipexec_loader.dll \
+		sipexec/sipexec_loader.c -lkernel32
+	@echo "  sipexec/sipexec_loader.dll"
 
 .PHONY: all clean payload
