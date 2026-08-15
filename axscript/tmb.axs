@@ -86,7 +86,11 @@ cmd_se.setPreHook(function (id, cmdline, parsed_json, ...parsed_lines) {
     let guid = parsed_json["guid"] || "pe";
 
     if (action == 0 && dll.length == 0)
-        throw new Error("--dll is required for install.\n\nUsage:\n  tmb_sip_exec --dll C:\\path\\implant.dll --guid pe\n  tmb_sip_exec --clean --guid pe\n\nAliases: pe, ps1, jscript, vbscript, wsf, cab, catalog, appx, appx-bundle, msi, ctl, esd, sac");
+        throw new Error("--dll is required for install.\n\nUsage:\n  tmb_sip_exec --dll C:\\path\\implant.dll --guid pe\n  tmb_sip_exec --clean --guid pe\n\nFor lateral movement, use: jump sipexec / invoke sipexec");
+
+    // Sanity check: DLL path should not contain spaces from stray args
+    if (dll.indexOf(" ") !== -1)
+        throw new Error("DLL path contains spaces — did you pass extra arguments?\nGot: " + dll + "\n\nThis command only installs a local SIP implant.\nFor remote exec, use: invoke sipexec <target> <command>");
 
     let bof_params = ax.bof_pack("short,cstr,cstr", [action, dll, guid]);
     let bof_path = bof_dir + "tmb_sip_exec.o";
