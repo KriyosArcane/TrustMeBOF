@@ -27,4 +27,9 @@ $(BINDIR)/%.o: $(SRCDIR)/%.cpp include/beacon.h
 clean:
 	rm -f $(BINDIR)/*.o
 
-.PHONY: all clean
+payload:
+	$(CC) -shared -O2 -s -fno-ident -o sipexec/sipexec_payload_impersonate.dll \
+		sipexec/sipexec_payload_impersonate.c -lkernel32 -ladvapi32
+	@echo "  sipexec/sipexec_payload_impersonate.dll"
+
+.PHONY: all clean payload

@@ -84,6 +84,10 @@ cmd_se.setPreHook(function (id, cmdline, parsed_json, ...parsed_lines) {
     let action = parsed_json["--clean"] ? 1 : 0;
     let dll = parsed_json["dll"] || "";
     let guid = parsed_json["guid"] || "pe";
+
+    if (action == 0 && dll.length == 0)
+        throw new Error("--dll is required for install.\n\nUsage:\n  tmb_sip_exec --dll C:\\path\\implant.dll --guid pe\n  tmb_sip_exec --clean --guid pe\n\nAliases: pe, ps1, jscript, vbscript, wsf, cab, catalog, appx, appx-bundle, msi, ctl, esd, sac");
+
     let bof_params = ax.bof_pack("short,cstr,cstr", [action, dll, guid]);
     let bof_path = bof_dir + "tmb_sip_exec.o";
     ax.execute_alias(id, cmdline, `execute bof "${bof_path}" ${bof_params}`, "Task: SIP exec");

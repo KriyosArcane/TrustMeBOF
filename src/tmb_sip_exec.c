@@ -45,6 +45,9 @@ void go(char *args, int alen) {
         /* Install */
         if (!dll_path || !*dll_path) {
             TMB_ERR("--dll is required for install.");
+            TMB_INFO("Usage: tmb_sip_exec install --dll C:\\path\\implant.dll --guid pe");
+            TMB_INFO("       tmb_sip_exec remove --guid pe");
+            TMB_INFO("Aliases: pe, ps1, jscript, vbscript, wsf, cab, catalog, appx, appx-bundle, msi, ctl, esd, sac");
             return;
         }
         wchar_t wdll[260];
